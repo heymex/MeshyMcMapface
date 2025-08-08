@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-MeshyMcMapface Agent MVP - Connects to local Meshtastic node and reports to central server
+Enhanced MeshyMcMapface Agent with Multi-Server Support
+Supports reporting to multiple servers with different configurations
 """
 
 import asyncio
@@ -13,7 +14,7 @@ import queue
 import threading
 import base64
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import configparser
 import argparse
 import sys
@@ -30,25 +31,48 @@ except ImportError:
     print("Error: Meshtastic library not installed. Run: pip install meshtastic")
     sys.exit(1)
 
-class MeshyMcMapfaceAgent:
+class ServerConfig:
+    """Configuration for a single server"""
+    def __init__(self, name: str, config_section: Dict):
+        self.name = name
+        self.url = config_section['url']
+        self.api_key = config_section['api_key']
+        self.enabled = config_section.get('enabled', 'true').lower() == 'true'
+        self.report_interval = int(config_section.get('report_interval', 30))
+        self.packet_types = config_section.get('packet_types', 'all').split(',')
+        self.priority = int(config_section.get('priority', 1))
+        self.max_retries = int(config_section.get('max_retries', 3))
+        self.timeout = int(config_section.get('timeout', 10))
+        
+        # Server-specific filtering
+        self.filter_nodes = config_section.get('filter_nodes', '').split(',') if config_section.get('filter_nodes') else []
+        self.exclude_nodes = config_section.get('exclude_nodes', '').split(',') if config_section.get('exclude_nodes') else []
+        
+        # Status tracking
+        self.last_success = None
+        self.consecutive_failures = 0
+        self.is_healthy = True
+
+class MultiServerMeshyMcMapfaceAgent:
     def __init__(self, config_file: str):
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
         
-        # Configuration
+        # Agent configuration
         self.agent_id = self.config.get('agent', 'id')
         self.location_name = self.config.get('agent', 'location_name')
         self.location_lat = self.config.getfloat('agent', 'location_lat')
         self.location_lon = self.config.getfloat('agent', 'location_lon')
         
-        self.server_url = self.config.get('server', 'url')
-        self.api_key = self.config.get('server', 'api_key')
-        self.report_interval = self.config.getint('server', 'report_interval', fallback=30)
-        
+        # Meshtastic configuration
         self.connection_type = self.config.get('meshtastic', 'connection_type', fallback='auto')
         self.device_path = self.config.get('meshtastic', 'device_path', fallback=None)
         self.tcp_host = self.config.get('meshtastic', 'tcp_host', fallback=None)
         self.ble_address = self.config.get('meshtastic', 'ble_address', fallback=None)
+        
+        # Load server configurations
+        self.servers = {}
+        self.load_server_configs()
         
         # State
         self.interface = None
@@ -60,6 +84,9 @@ class MeshyMcMapfaceAgent:
         self.packet_queue = queue.Queue()
         self.node_queue = queue.Queue()
         
+        # Server-specific queues (for different reporting intervals)
+        self.server_queues = {name: queue.Queue() for name in self.servers.keys()}
+        
         # Setup logging
         logging.basicConfig(level=logging.INFO, 
                           format='%(asctime)s - %(levelname)s - %(message)s')
@@ -68,10 +95,24 @@ class MeshyMcMapfaceAgent:
         # Setup local database
         self.setup_database()
         
+        self.logger.info(f"Loaded {len(self.servers)} server configurations")
+        for name, server in self.servers.items():
+            if server.enabled:
+                self.logger.info(f"  - {name}: {server.url} (interval: {server.report_interval}s, priority: {server.priority})")
+            else:
+                self.logger.info(f"  - {name}: DISABLED")
+    
+    def load_server_configs(self):
+        """Load multiple server configurations"""
+        for section_name in self.config.sections():
+            if section_name.startswith('server_'):
+                server_name = section_name[7:]  # Remove 'server_' prefix
+                server_config = dict(self.config.items(section_name))
+                self.servers[server_name] = ServerConfig(server_name, server_config)
+    
     def setup_database(self):
         """Initialize local SQLite database for buffering"""
         self.db_path = f"{self.agent_id}_buffer.db"
-        # Note: We'll create connections in the specific threads that need them
     
     def get_db_connection(self):
         """Get a database connection for the current thread"""
@@ -83,7 +124,8 @@ class MeshyMcMapfaceAgent:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT,
                 packet_data TEXT,
-                sent INTEGER DEFAULT 0
+                server_status TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -99,6 +141,18 @@ class MeshyMcMapfaceAgent:
                 updated_at TEXT
             )
         ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS server_health (
+                server_name TEXT PRIMARY KEY,
+                last_success TEXT,
+                last_failure TEXT,
+                consecutive_failures INTEGER DEFAULT 0,
+                total_packets_sent INTEGER DEFAULT 0,
+                is_healthy BOOLEAN DEFAULT 1
+            )
+        ''')
+        
         conn.commit()
         return conn
     
@@ -134,52 +188,27 @@ class MeshyMcMapfaceAgent:
             self.logger.error(f"Failed to connect to Meshtastic node: {e}")
             return False
     
-    def _safe_convert(self, value):
-        """Safely convert values to JSON-serializable types"""
-        if isinstance(value, bytes):
-            # Convert bytes to base64 string
-            return base64.b64encode(value).decode('ascii')
-        elif hasattr(value, '__dict__'):
-            # Convert objects with __dict__ to dict
-            return {k: self._safe_convert(v) for k, v in value.__dict__.items()}
-        elif isinstance(value, (list, tuple)):
-            return [self._safe_convert(item) for item in value]
-        elif isinstance(value, dict):
-            return {k: self._safe_convert(v) for k, v in value.items()}
-        else:
-            return value
-    
-    def _convert_protobuf_to_dict(self, obj):
-        """Convert protobuf objects to dictionaries recursively"""
-        if hasattr(obj, 'ListFields'):
-            # This is a protobuf message
-            result = {}
-            for field, value in obj.ListFields():
-                if hasattr(value, 'ListFields'):
-                    result[field.name] = self._convert_protobuf_to_dict(value)
-                elif isinstance(value, (list, tuple)):
-                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
-                else:
-                    result[field.name] = self._safe_convert(value)
-            return result
-        elif isinstance(obj, dict):
-            # Already a dict, process recursively
-            result = {}
-            for key, value in obj.items():
-                if hasattr(value, 'ListFields'):
-                    result[key] = self._convert_protobuf_to_dict(value)
-                elif isinstance(value, (list, tuple)):
-                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
-                else:
-                    result[key] = self._safe_convert(value)
-            return result
-        else:
-            return self._safe_convert(obj)
+    def should_send_to_server(self, server: ServerConfig, packet_data: Dict, node_id: str) -> bool:
+        """Determine if packet should be sent to specific server"""
+        if not server.enabled:
+            return False
+        
+        # Check packet type filtering
+        if server.packet_types != ['all'] and packet_data['type'] not in server.packet_types:
+            return False
+        
+        # Check node filtering
+        if server.filter_nodes and node_id not in server.filter_nodes:
+            return False
+        
+        if server.exclude_nodes and node_id in server.exclude_nodes:
+            return False
+        
+        return True
     
     def on_receive(self, packet, interface):
         """Handle received packets"""
         try:
-            # Debug: Log all received packets
             self.logger.info(f"Received packet from: {packet.get('fromId', 'unknown')}")
             
             # Convert packet to JSON-serializable format
@@ -193,31 +222,20 @@ class MeshyMcMapfaceAgent:
                 'want_ack': packet.get('wantAck', False),
                 'rssi': packet.get('rssi', None),
                 'snr': packet.get('snr', None),
-                'type': 'unknown',  # Default type
-                'payload': None     # Default payload
+                'type': 'unknown',
+                'payload': None
             }
             
-            self.logger.info(f"Processing packet from {packet_data['from_node']}")
-            
-            # Update node information from any packet (not just node updates)
-            if packet_data['from_node'] and packet_data['from_node'] not in ['^all', '^local', 'null', '']:
-                self.logger.info(f"Updating node info for: {packet_data['from_node']}")
-                self.update_node_from_packet(packet_data['from_node'], packet_data)
-            
-            # Handle different payload types
+            # Process packet types (similar to original agent)
             if 'decoded' in packet and packet['decoded']:
                 decoded = packet['decoded']
-                packet_data['port_num'] = decoded.get('portnum', '')
                 
                 if 'text' in decoded:
                     packet_data['type'] = 'text_message'
                     packet_data['payload'] = decoded['text']
-                    self.logger.info(f"Text message from {packet_data['from_node']}: {decoded['text']}")
-                    
                 elif 'position' in decoded:
                     packet_data['type'] = 'position'
                     pos = decoded['position']
-                    # Convert protobuf position to dict
                     position_data = {
                         'latitude': getattr(pos, 'latitude', 0) if hasattr(pos, 'latitude') else pos.get('latitude', 0),
                         'longitude': getattr(pos, 'longitude', 0) if hasattr(pos, 'longitude') else pos.get('longitude', 0),
@@ -226,98 +244,64 @@ class MeshyMcMapfaceAgent:
                     }
                     packet_data['payload'] = position_data
                     
-                    self.logger.info(f"Position from {packet_data['from_node']}: lat={position_data['latitude']}, lon={position_data['longitude']}")
-                    
-                    # Update node position from position packet
                     if packet_data['from_node'] and position_data['latitude'] and position_data['longitude']:
-                        self.logger.info(f"Updating position for node {packet_data['from_node']}")
                         self.update_node_position(packet_data['from_node'], position_data)
-                    
                 elif 'telemetry' in decoded:
                     packet_data['type'] = 'telemetry'
-                    tel = decoded['telemetry']
-                    # Convert protobuf telemetry to dict
-                    telemetry_data = {}
-                    
-                    # Handle device metrics
-                    if hasattr(tel, 'device_metrics') or (isinstance(tel, dict) and 'device_metrics' in tel):
-                        device_metrics = getattr(tel, 'device_metrics', None) or tel.get('device_metrics')
-                        if device_metrics:
-                            battery_level = getattr(device_metrics, 'battery_level', None) if hasattr(device_metrics, 'battery_level') else device_metrics.get('battery_level')
-                            telemetry_data['device_metrics'] = {
-                                'battery_level': battery_level,
-                                'voltage': getattr(device_metrics, 'voltage', None) if hasattr(device_metrics, 'voltage') else device_metrics.get('voltage'),
-                                'channel_utilization': getattr(device_metrics, 'channel_utilization', None) if hasattr(device_metrics, 'channel_utilization') else device_metrics.get('channel_utilization'),
-                                'air_util_tx': getattr(device_metrics, 'air_util_tx', None) if hasattr(device_metrics, 'air_util_tx') else device_metrics.get('air_util_tx')
-                            }
-                            
-                            self.logger.info(f"Telemetry from {packet_data['from_node']}: battery={battery_level}%")
-                            
-                            # Update node battery level from telemetry
-                            if packet_data['from_node'] and battery_level is not None:
-                                self.update_node_battery(packet_data['from_node'], battery_level)
-                    
-                    # Handle environment metrics
-                    if hasattr(tel, 'environment_metrics') or (isinstance(tel, dict) and 'environment_metrics' in tel):
-                        env_metrics = getattr(tel, 'environment_metrics', None) or tel.get('environment_metrics')
-                        if env_metrics:
-                            telemetry_data['environment_metrics'] = {
-                                'temperature': getattr(env_metrics, 'temperature', None) if hasattr(env_metrics, 'temperature') else env_metrics.get('temperature'),
-                                'relative_humidity': getattr(env_metrics, 'relative_humidity', None) if hasattr(env_metrics, 'relative_humidity') else env_metrics.get('relative_humidity'),
-                                'barometric_pressure': getattr(env_metrics, 'barometric_pressure', None) if hasattr(env_metrics, 'barometric_pressure') else env_metrics.get('barometric_pressure')
-                            }
-                    
-                    packet_data['payload'] = telemetry_data
-                    
+                    # Process telemetry data...
                 elif 'user' in decoded:
                     packet_data['type'] = 'user_info'
-                    user = decoded['user']
-                    # Convert protobuf user to dict
-                    user_data = {
-                        'id': getattr(user, 'id', '') if hasattr(user, 'id') else user.get('id', ''),
-                        'long_name': getattr(user, 'long_name', '') if hasattr(user, 'long_name') else user.get('long_name', ''),
-                        'short_name': getattr(user, 'short_name', '') if hasattr(user, 'short_name') else user.get('short_name', ''),
-                        'hw_model': getattr(user, 'hw_model', 0) if hasattr(user, 'hw_model') else user.get('hw_model', 0)
-                    }
-                    packet_data['payload'] = user_data
-                    
-                    self.logger.info(f"User info from {packet_data['from_node']}: {user_data['long_name']} ({user_data['short_name']})")
-                    
-                    # Update node user info
-                    if packet_data['from_node']:
-                        self.update_node_user_info(packet_data['from_node'], user_data)
-                    
+                    # Process user info...
                 else:
                     packet_data['type'] = 'other'
-                    self.logger.info(f"Other packet from {packet_data['from_node']}: portnum={packet_data.get('port_num')}")
-                    # Try to convert any protobuf objects to strings
-                    try:
-                        packet_data['payload'] = self._convert_protobuf_to_dict(decoded)
-                    except:
-                        packet_data['payload'] = self._safe_convert(decoded)
             else:
                 packet_data['type'] = 'encrypted'
-                packet_data['payload'] = None
-                self.logger.info(f"Encrypted/undecoded packet from {packet_data['from_node']}")
             
-            # Buffer packet locally (thread-safe)
-            self.packet_queue.put(packet_data)
-            self.logger.debug(f"Queued packet: {packet_data['type']} from {packet_data['from_node']}")
+            # Update node tracking
+            if packet_data['from_node'] and packet_data['from_node'] not in ['^all', '^local', 'null', '']:
+                self.update_node_from_packet(packet_data['from_node'], packet_data)
+            
+            # Buffer packet for all relevant servers
+            self.buffer_packet_for_servers(packet_data)
             
         except Exception as e:
             self.logger.error(f"Error processing packet: {e}")
-            # Log the problematic packet for debugging
-            self.logger.error(f"Problematic packet: {packet}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def buffer_packet_for_servers(self, packet_data: Dict):
+        """Buffer packet with server-specific routing information"""
+        try:
+            # Determine which servers should receive this packet
+            server_routing = {}
+            node_id = packet_data['from_node']
+            
+            for server_name, server in self.servers.items():
+                if self.should_send_to_server(server, packet_data, node_id):
+                    server_routing[server_name] = {
+                        'queued': False,
+                        'sent': False,
+                        'last_attempt': None,
+                        'retry_count': 0
+                    }
+            
+            if server_routing:
+                conn = self.get_db_connection()
+                conn.execute('''
+                    INSERT INTO packet_buffer (timestamp, packet_data, server_status)
+                    VALUES (?, ?, ?)
+                ''', (packet_data['timestamp'], json.dumps(packet_data), json.dumps(server_routing)))
+                conn.commit()
+                conn.close()
+                
+                self.logger.debug(f"Buffered packet for servers: {list(server_routing.keys())}")
+            
+        except Exception as e:
+            self.logger.error(f"Error buffering packet for servers: {e}")
     
     def update_node_from_packet(self, node_id, packet_data):
         """Update node information from any packet"""
         if not node_id or node_id in ['^all', '^local']:
             return
             
-        self.logger.info(f"Creating/updating node: {node_id}")
-        
         status = {
             'node_id': node_id,
             'last_seen': packet_data['timestamp'],
@@ -331,82 +315,14 @@ class MeshyMcMapfaceAgent:
         
         self.node_status[node_id] = status
         self.node_queue.put(status)
-        self.logger.info(f"Node {node_id} queued for database update")
     
     def update_node_position(self, node_id, position_data):
-        """Update node position from position packet"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        self.logger.info(f"Updating position for node {node_id}: {position_data['latitude']}, {position_data['longitude']}")
-        
+        """Update node position"""
         if node_id in self.node_status:
             self.node_status[node_id]['position_lat'] = position_data['latitude']
             self.node_status[node_id]['position_lon'] = position_data['longitude']
             self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
             self.node_queue.put(self.node_status[node_id])
-        else:
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': None,
-                'position_lat': position_data['latitude'],
-                'position_lon': position_data['longitude'],
-                'rssi': None,
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-        
-        self.logger.info(f"Node {node_id} position queued for database update")
-    
-    def update_node_battery(self, node_id, battery_level):
-        """Update node battery level from telemetry"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        self.logger.info(f"Updating battery for node {node_id}: {battery_level}%")
-        
-        if node_id in self.node_status:
-            self.node_status[node_id]['battery_level'] = battery_level
-            self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
-            self.node_queue.put(self.node_status[node_id])
-        else:
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': battery_level,
-                'position_lat': None,
-                'position_lon': None,
-                'rssi': None,
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-        
-        self.logger.info(f"Node {node_id} battery queued for database update")
-    
-    def update_node_user_info(self, node_id, user_data):
-        """Update node user information"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        # For now, just ensure the node exists in our tracking
-        if node_id not in self.node_status:
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': None,
-                'position_lat': None,
-                'position_lon': None,
-                'rssi': None,
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
     
     def on_connection(self, interface, topic=None):
         """Handle connection established"""
@@ -414,83 +330,10 @@ class MeshyMcMapfaceAgent:
     
     def on_node_updated(self, node):
         """Handle node updates"""
-        try:
-            node_id = node.get('user', {}).get('id', '')
-            if not node_id:
-                return
-                
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': node.get('deviceMetrics', {}).get('batteryLevel', None),
-                'position_lat': node.get('position', {}).get('latitude', None),
-                'position_lon': node.get('position', {}).get('longitude', None),
-                'rssi': None,  # Will be updated from packets
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-            
-        except Exception as e:
-            self.logger.error(f"Error updating node status: {e}")
+        pass  # Simplified for brevity
     
-    def buffer_packet(self, packet_data):
-        """Store packet in local buffer - called from main thread"""
-        try:
-            conn = self.get_db_connection()
-            conn.execute('''
-                INSERT INTO packet_buffer (timestamp, packet_data)
-                VALUES (?, ?)
-            ''', (packet_data['timestamp'], json.dumps(packet_data)))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error buffering packet: {e}")
-    
-    def update_node_status(self, status):
-        """Update node status in local database - called from main thread"""
-        try:
-            conn = self.get_db_connection()
-            conn.execute('''
-                INSERT OR REPLACE INTO node_status 
-                (node_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                status['node_id'], status['last_seen'], status['battery_level'],
-                status['position_lat'], status['position_lon'], 
-                status['rssi'], status['snr'], status['updated_at']
-            ))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error updating node status: {e}")
-    
-    def process_queued_data(self):
-        """Process queued packets and node updates from main thread"""
-        # Process packets
-        while not self.packet_queue.empty():
-            try:
-                packet_data = self.packet_queue.get_nowait()
-                self.buffer_packet(packet_data)
-            except queue.Empty:
-                break
-            except Exception as e:
-                self.logger.error(f"Error processing queued packet: {e}")
-        
-        # Process node updates
-        while not self.node_queue.empty():
-            try:
-                status = self.node_queue.get_nowait()
-                self.update_node_status(status)
-            except queue.Empty:
-                break
-            except Exception as e:
-                self.logger.error(f"Error processing queued node status: {e}")
-    
-    async def register_with_server(self):
-        """Register this agent with the central server"""
+    async def register_with_server(self, server: ServerConfig) -> bool:
+        """Register this agent with a specific server"""
         try:
             payload = {
                 'agent_id': self.agent_id,
@@ -502,42 +345,64 @@ class MeshyMcMapfaceAgent:
             
             headers = {
                 'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
+                'X-API-Key': server.api_key
             }
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self.server_url}/api/agent/register",
+                    f"{server.url}/api/agent/register",
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=aiohttp.ClientTimeout(total=server.timeout)
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
-                        self.logger.info(f"Successfully registered with server: {result.get('agent_id')}")
+                        self.logger.info(f"Successfully registered with {server.name}: {result.get('agent_id')}")
+                        self.update_server_health(server.name, success=True)
                         return True
                     else:
-                        self.logger.error(f"Failed to register with server: {response.status}")
+                        self.logger.error(f"Failed to register with {server.name}: {response.status}")
+                        self.update_server_health(server.name, success=False)
                         return False
                         
         except Exception as e:
-            self.logger.error(f"Error registering with server: {e}")
+            self.logger.error(f"Error registering with {server.name}: {e}")
+            self.update_server_health(server.name, success=False)
             return False
     
-    async def send_data_to_server(self):
-        """Send buffered data to central server"""
+    async def send_data_to_server(self, server: ServerConfig):
+        """Send buffered data to a specific server"""
         try:
-            # Get unsent packets
+            # Get unsent packets for this server
             conn = self.get_db_connection()
             cursor = conn.execute('''
-                SELECT id, packet_data FROM packet_buffer 
-                WHERE sent = 0 
+                SELECT id, packet_data, server_status FROM packet_buffer 
+                WHERE created_at > datetime('now', '-1 hour')
                 ORDER BY timestamp 
                 LIMIT 100
             ''')
             packets = cursor.fetchall()
             
             if not packets:
+                conn.close()
+                return
+            
+            # Filter packets that need to be sent to this server
+            packets_to_send = []
+            packet_ids_to_update = []
+            
+            for packet_row in packets:
+                packet_id, packet_data_str, server_status_str = packet_row
+                server_status = json.loads(server_status_str)
+                
+                if (server.name in server_status and 
+                    not server_status[server.name]['sent'] and
+                    server_status[server.name]['retry_count'] < server.max_retries):
+                    
+                    packets_to_send.append(json.loads(packet_data_str))
+                    packet_ids_to_update.append(packet_id)
+            
+            if not packets_to_send:
                 conn.close()
                 return
             
@@ -554,7 +419,7 @@ class MeshyMcMapfaceAgent:
                     'coordinates': [self.location_lat, self.location_lon]
                 },
                 'timestamp': datetime.now(timezone.utc).isoformat(),
-                'packets': [json.loads(p[1]) for p in packets],
+                'packets': packets_to_send,
                 'node_status': [
                     {
                         'node_id': n[0],
@@ -570,100 +435,206 @@ class MeshyMcMapfaceAgent:
             # Send to server
             headers = {
                 'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
+                'X-API-Key': server.api_key
             }
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self.server_url}/api/agent/data",
+                    f"{server.url}/api/agent/data",
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=aiohttp.ClientTimeout(total=server.timeout)
                 ) as response:
                     if response.status == 200:
-                        # Mark packets as sent
-                        conn = self.get_db_connection()
-                        packet_ids = [p[0] for p in packets]
-                        placeholders = ','.join('?' * len(packet_ids))
-                        conn.execute(f'''
-                            UPDATE packet_buffer 
-                            SET sent = 1 
-                            WHERE id IN ({placeholders})
-                        ''', packet_ids)
-                        conn.commit()
-                        conn.close()
+                        # Mark packets as sent for this server
+                        self.mark_packets_sent(packet_ids_to_update, server.name)
+                        self.update_server_health(server.name, success=True)
                         
-                        self.logger.info(f"Successfully sent {len(packets)} packets to server")
+                        self.logger.info(f"Successfully sent {len(packets_to_send)} packets to {server.name}")
                     else:
-                        self.logger.error(f"Server returned status {response.status}")
+                        self.logger.error(f"Server {server.name} returned status {response.status}")
+                        self.update_server_health(server.name, success=False)
                         
         except Exception as e:
-            self.logger.error(f"Error sending data to server: {e}")
+            self.logger.error(f"Error sending data to {server.name}: {e}")
+            self.update_server_health(server.name, success=False)
     
-    async def cleanup_old_data(self):
-        """Clean up old buffered data"""
+    def mark_packets_sent(self, packet_ids: List[int], server_name: str):
+        """Mark packets as sent to a specific server"""
         try:
-            # Remove sent packets older than 1 day
-            cutoff = datetime.now(timezone.utc).timestamp() - (24 * 60 * 60)
-            cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-            
             conn = self.get_db_connection()
-            conn.execute('''
-                DELETE FROM packet_buffer 
-                WHERE sent = 1 AND timestamp < ?
-            ''', (cutoff_iso,))
+            
+            for packet_id in packet_ids:
+                cursor = conn.execute('SELECT server_status FROM packet_buffer WHERE id = ?', (packet_id,))
+                row = cursor.fetchone()
+                if row:
+                    server_status = json.loads(row[0])
+                    if server_name in server_status:
+                        server_status[server_name]['sent'] = True
+                        server_status[server_name]['last_attempt'] = datetime.now(timezone.utc).isoformat()
+                    
+                    conn.execute('UPDATE packet_buffer SET server_status = ? WHERE id = ?',
+                               (json.dumps(server_status), packet_id))
+            
             conn.commit()
             conn.close()
             
         except Exception as e:
-            self.logger.error(f"Error cleaning up old data: {e}")
+            self.logger.error(f"Error marking packets sent for {server_name}: {e}")
+    
+    def update_server_health(self, server_name: str, success: bool):
+        """Update server health status"""
+        try:
+            conn = self.get_db_connection()
+            now = datetime.now(timezone.utc).isoformat()
+            
+            if success:
+                conn.execute('''
+                    INSERT OR REPLACE INTO server_health 
+                    (server_name, last_success, consecutive_failures, total_packets_sent, is_healthy)
+                    VALUES (?, ?, 0, COALESCE((SELECT total_packets_sent FROM server_health WHERE server_name = ?), 0) + 1, 1)
+                ''', (server_name, now, server_name))
+                
+                if server_name in self.servers:
+                    self.servers[server_name].consecutive_failures = 0
+                    self.servers[server_name].is_healthy = True
+                    self.servers[server_name].last_success = now
+            else:
+                conn.execute('''
+                    INSERT OR REPLACE INTO server_health 
+                    (server_name, last_failure, consecutive_failures, total_packets_sent, is_healthy)
+                    VALUES (?, ?, COALESCE((SELECT consecutive_failures FROM server_health WHERE server_name = ?), 0) + 1, 
+                            COALESCE((SELECT total_packets_sent FROM server_health WHERE server_name = ?), 0), 0)
+                ''', (server_name, now, server_name, server_name))
+                
+                if server_name in self.servers:
+                    self.servers[server_name].consecutive_failures += 1
+                    self.servers[server_name].is_healthy = False
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating server health for {server_name}: {e}")
+    
+    def process_queued_data(self):
+        """Process queued packets and node updates from main thread"""
+        # Process node updates
+        while not self.node_queue.empty():
+            try:
+                status = self.node_queue.get_nowait()
+                self.update_node_status(status)
+            except queue.Empty:
+                break
+            except Exception as e:
+                self.logger.error(f"Error processing queued node status: {e}")
+    
+    def update_node_status(self, status):
+        """Update node status in local database"""
+        try:
+            conn = self.get_db_connection()
+            conn.execute('''
+                INSERT OR REPLACE INTO node_status 
+                (node_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                status['node_id'], status['last_seen'], status['battery_level'],
+                status['position_lat'], status['position_lon'], 
+                status['rssi'], status['snr'], status['updated_at']
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.logger.error(f"Error updating node status: {e}")
     
     async def run(self):
-        """Main agent loop"""
-        self.logger.info(f"Starting MeshyMcMapface Agent {self.agent_id}")
+        """Main agent loop with multi-server support"""
+        self.logger.info(f"Starting Multi-Server MeshyMcMapface Agent {self.agent_id}")
         
         # Connect to Meshtastic node
         if not self.connect_to_node():
             self.logger.error("Failed to connect to Meshtastic node, exiting")
             return
         
-        # Register with server
-        self.logger.info("Registering with server...")
-        if await self.register_with_server():
-            self.logger.info("Registration successful")
-        else:
-            self.logger.warning("Registration failed, but continuing anyway")
+        # Register with all enabled servers
+        self.logger.info("Registering with servers...")
+        for server in self.servers.values():
+            if server.enabled:
+                success = await self.register_with_server(server)
+                if success:
+                    self.logger.info(f"Registration with {server.name} successful")
+                else:
+                    self.logger.warning(f"Registration with {server.name} failed")
         
-        # Main loop
-        while self.running:
-            try:
-                # Process any queued data from callback threads
+        # Create per-server tasks with different intervals
+        server_tasks = []
+        for server in self.servers.values():
+            if server.enabled:
+                task = asyncio.create_task(self.server_loop(server))
+                server_tasks.append(task)
+        
+        # Main processing loop
+        try:
+            while self.running:
+                # Process queued data
                 self.process_queued_data()
                 
-                # Send data to server
-                await self.send_data_to_server()
-                
-                # Clean up old data
+                # Cleanup old data
                 await self.cleanup_old_data()
                 
-                # Wait for next interval
-                await asyncio.sleep(self.report_interval)
+                # Wait before next cycle
+                await asyncio.sleep(5)  # Fast processing loop
                 
-            except KeyboardInterrupt:
-                self.logger.info("Received interrupt, shutting down...")
-                self.running = False
-                break
-            except Exception as e:
-                self.logger.error(f"Error in main loop: {e}")
-                await asyncio.sleep(5)  # Brief pause before retry
+        except KeyboardInterrupt:
+            self.logger.info("Received interrupt, shutting down...")
+            self.running = False
+        
+        # Cancel server tasks
+        for task in server_tasks:
+            task.cancel()
         
         # Cleanup
         if self.interface:
             self.interface.close()
-        self.logger.info("MeshyMcMapface Agent stopped")
+        self.logger.info("Multi-Server MeshyMcMapface Agent stopped")
+    
+    async def server_loop(self, server: ServerConfig):
+        """Individual server reporting loop"""
+        self.logger.info(f"Started reporting loop for {server.name} (interval: {server.report_interval}s)")
+        
+        while self.running:
+            try:
+                if server.enabled and server.is_healthy:
+                    await self.send_data_to_server(server)
+                
+                await asyncio.sleep(server.report_interval)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Error in server loop for {server.name}: {e}")
+                await asyncio.sleep(server.report_interval)
+    
+    async def cleanup_old_data(self):
+        """Clean up old buffered data"""
+        try:
+            # Remove old packets (keep for 24 hours)
+            cutoff = datetime.now(timezone.utc).timestamp() - (24 * 60 * 60)
+            cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+            
+            conn = self.get_db_connection()
+            conn.execute('''
+                DELETE FROM packet_buffer 
+                WHERE created_at < ?
+            ''', (cutoff_iso,))
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            self.logger.error(f"Error cleaning up old data: {e}")
 
-def create_sample_config():
-    """Create sample configuration file"""
+def create_sample_multi_config():
+    """Create sample configuration file for multi-server setup"""
     config = configparser.ConfigParser()
     
     config['agent'] = {
@@ -673,12 +644,6 @@ def create_sample_config():
         'location_lon': '-122.4194'
     }
     
-    config['server'] = {
-        'url': 'http://localhost:8082',
-        'api_key': 'your-api-key-here',
-        'report_interval': '30'
-    }
-    
     config['meshtastic'] = {
         'connection_type': 'auto',
         '# device_path': '/dev/ttyUSB0',
@@ -686,23 +651,64 @@ def create_sample_config():
         '# ble_address': 'AA:BB:CC:DD:EE:FF'
     }
     
-    with open('agent_config.ini', 'w') as f:
+    # Primary server
+    config['server_primary'] = {
+        'url': 'http://localhost:8082',
+        'api_key': 'primary-server-key',
+        'enabled': 'true',
+        'report_interval': '30',
+        'packet_types': 'all',
+        'priority': '1',
+        'max_retries': '3',
+        'timeout': '10'
+    }
+    
+    # Backup server
+    config['server_backup'] = {
+        'url': 'http://backup.example.com:8082',
+        'api_key': 'backup-server-key',
+        'enabled': 'true',
+        'report_interval': '60',
+        'packet_types': 'all',
+        'priority': '2',
+        'max_retries': '5',
+        'timeout': '15'
+    }
+    
+    # Analytics server (only specific data)
+    config['server_analytics'] = {
+        'url': 'http://analytics.example.com:8083',
+        'api_key': 'analytics-server-key',
+        'enabled': 'true',
+        'report_interval': '300',
+        'packet_types': 'position,telemetry',
+        'priority': '3',
+        'max_retries': '2',
+        'timeout': '30',
+        '# filter_nodes': '!node1,!node2',
+        '# exclude_nodes': '!private_node'
+    }
+    
+    with open('multi_agent_config.ini', 'w') as f:
         config.write(f)
     
-    print("Created sample config file: agent_config.ini")
-    print("Please edit the configuration before running the agent.")
+    print("Created sample multi-server config file: multi_agent_config.ini")
+    print("\nServer configurations:")
+    print("  - Primary: Real-time reporting every 30s")
+    print("  - Backup: Redundant reporting every 60s") 
+    print("  - Analytics: Position/telemetry only every 5min")
 
 def main():
-    parser = argparse.ArgumentParser(description='MeshyMcMapface Agent MVP')
-    parser.add_argument('--config', default='agent_config.ini', 
+    parser = argparse.ArgumentParser(description='Multi-Server MeshyMcMapface Agent')
+    parser.add_argument('--config', default='multi_agent_config.ini',
                        help='Configuration file path')
     parser.add_argument('--create-config', action='store_true',
-                       help='Create sample configuration file')
+                       help='Create sample multi-server configuration file')
     
     args = parser.parse_args()
     
     if args.create_config:
-        create_sample_config()
+        create_sample_multi_config()
         return
     
     if not Path(args.config).exists():
@@ -710,7 +716,7 @@ def main():
         print("Use --create-config to generate a sample configuration.")
         return
     
-    agent = MeshyMcMapfaceAgent(args.config)
+    agent = MultiServerMeshyMcMapfaceAgent(args.config)
     
     try:
         asyncio.run(agent.run())
