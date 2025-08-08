@@ -860,9 +860,147 @@ class DistributedMeshyMcMapfaceServer:
         '''
         return web.Response(text=html, content_type='text/html')
     
+    async def nodes_page(self, request):
+        """Nodes page with table view"""
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nodes - MeshyMcMapface</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .table th { background: #f8f9fa; }
+        .status-active { color: #4CAF50; font-weight: bold; }
+        .status-inactive { color: #f44336; }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+        .nav a.active { background: #2196F3; color: white; }
+        .battery-high { color: #4CAF50; }
+        .battery-medium { color: #FF9800; }
+        .battery-low { color: #f44336; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Network Nodes</h1>
+            <p>All mesh nodes detected across the network</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents">Agents</a>
+            <a href="/packets">Packets</a>
+            <a href="/nodes" class="active">Nodes</a>
+            <a href="/map">Map</a>
+        </div>
+        
+        <div class="section">
+            <h2>All Network Nodes</h2>
+            <table class="table" id="nodes-table">
+                <thead>
+                    <tr>
+                        <th>Node ID</th>
+                        <th>Agent</th>
+                        <th>Last Seen</th>
+                        <th>Battery</th>
+                        <th>Position</th>
+                        <th>Signal (RSSI)</th>
+                        <th>SNR</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        async function loadAllNodes() {
+            try {
+                console.log('Loading nodes...');
+                const response = await fetch('/api/nodes');
+                console.log('Nodes response status:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch nodes:', response.status, response.statusText);
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('Nodes data:', data);
+                
+                const tbody = document.querySelector('#nodes-table tbody');
+                tbody.innerHTML = '';
+                
+                if (!data.nodes || data.nodes.length === 0) {
+                    console.log('No nodes found');
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="8" style="text-align: center;">No nodes found</td>';
+                    return;
+                }
+                
+                data.nodes.forEach(node => {
+                    const row = tbody.insertRow();
+                    const lastSeen = new Date(node.updated_at).toLocaleString();
+                    const isActive = new Date() - new Date(node.updated_at) < 60 * 60 * 1000;
+                    
+                    // Format battery level with color coding
+                    let batteryDisplay = '-';
+                    let batteryClass = '';
+                    if (node.battery_level !== null) {
+                        batteryDisplay = `${node.battery_level}%`;
+                        if (node.battery_level > 50) batteryClass = 'battery-high';
+                        else if (node.battery_level > 20) batteryClass = 'battery-medium';
+                        else batteryClass = 'battery-low';
+                    }
+                    
+                    // Format position
+                    let positionDisplay = '-';
+                    if (node.position && node.position[0] && node.position[1]) {
+                        positionDisplay = `${node.position[0].toFixed(4)}, ${node.position[1].toFixed(4)}`;
+                    }
+                    
+                    row.innerHTML = `
+                        <td><strong>${node.node_id}</strong></td>
+                        <td>${node.agent_location}</td>
+                        <td>${lastSeen}</td>
+                        <td class="${batteryClass}">${batteryDisplay}</td>
+                        <td>${positionDisplay}</td>
+                        <td>${node.rssi ? node.rssi + ' dBm' : '-'}</td>
+                        <td>${node.snr ? node.snr + ' dB' : '-'}</td>
+                        <td class="${isActive ? 'status-active' : 'status-inactive'}">
+                            ${isActive ? 'Active' : 'Inactive'}
+                        </td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading nodes:', error);
+            }
+        }
+        
+        // Initial load
+        loadAllNodes();
+        
+        // Refresh every 30 seconds
+        setInterval(loadAllNodes, 30000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
+    
     async def packets_page(self, request):
         """Packets page with filtering"""
-        return web.Response(text="Packets page - TODO", content_type='text/html')
+        return web.Response(text="Packets page - Coming soon!", content_type='text/html')
     
     async def map_page(self, request):
         """Interactive map page showing nodes and agents"""
