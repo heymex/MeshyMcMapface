@@ -520,18 +520,25 @@ class MultiServerMeshyMcMapfaceAgent:
     def process_queued_data(self):
         """Process queued packets and node updates from main thread"""
         # Process node updates
+        node_count = 0
         while not self.node_queue.empty():
             try:
                 status = self.node_queue.get_nowait()
                 self.update_node_status(status)
+                node_count += 1
             except queue.Empty:
                 break
             except Exception as e:
                 self.logger.error(f"Error processing queued node status: {e}")
+        
+        if node_count > 0:
+            self.logger.info(f"Processed {node_count} queued node updates")
     
     def update_node_status(self, status):
         """Update node status in local database"""
         try:
+            self.logger.info(f"Writing node {status['node_id']} to database: lat={status['position_lat']}, lon={status['position_lon']}, battery={status['battery_level']}")
+            
             conn = self.get_db_connection()
             conn.execute('''
                 INSERT OR REPLACE INTO node_status 
@@ -544,8 +551,13 @@ class MultiServerMeshyMcMapfaceAgent:
             ))
             conn.commit()
             conn.close()
+            
+            self.logger.info(f"Successfully wrote node {status['node_id']} to database")
+            
         except Exception as e:
             self.logger.error(f"Error updating node status: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
     
     async def run(self):
         """Main agent loop with multi-server support"""
