@@ -180,7 +180,7 @@ class MeshyMcMapfaceAgent:
         """Handle received packets"""
         try:
             # Debug: Log all received packets
-            self.logger.info(f"Received packet: {packet}")
+            self.logger.info(f"Received packet from: {packet.get('fromId', 'unknown')}")
             
             # Convert packet to JSON-serializable format
             packet_data = {
@@ -192,18 +192,20 @@ class MeshyMcMapfaceAgent:
                 'hop_limit': packet.get('hopLimit', 0),
                 'want_ack': packet.get('wantAck', False),
                 'rssi': packet.get('rssi', None),
-                'snr': packet.get('snr', None)
+                'snr': packet.get('snr', None),
+                'type': 'unknown',  # Default type
+                'payload': None     # Default payload
             }
             
-            self.logger.info(f"Parsed packet data: from={packet_data['from_node']}, to={packet_data['to_node']}, type={packet.get('decoded', {}).get('portnum', 'unknown')}")
+            self.logger.info(f"Processing packet from {packet_data['from_node']}")
             
             # Update node information from any packet (not just node updates)
-            if packet_data['from_node']:
+            if packet_data['from_node'] and packet_data['from_node'] not in ['^all', '^local', 'null', '']:
                 self.logger.info(f"Updating node info for: {packet_data['from_node']}")
                 self.update_node_from_packet(packet_data['from_node'], packet_data)
             
             # Handle different payload types
-            if 'decoded' in packet:
+            if 'decoded' in packet and packet['decoded']:
                 decoded = packet['decoded']
                 packet_data['port_num'] = decoded.get('portnum', '')
                 
@@ -228,6 +230,7 @@ class MeshyMcMapfaceAgent:
                     
                     # Update node position from position packet
                     if packet_data['from_node'] and position_data['latitude'] and position_data['longitude']:
+                        self.logger.info(f"Updating position for node {packet_data['from_node']}")
                         self.update_node_position(packet_data['from_node'], position_data)
                     
                 elif 'telemetry' in decoded:
@@ -237,7 +240,7 @@ class MeshyMcMapfaceAgent:
                     telemetry_data = {}
                     
                     # Handle device metrics
-                    if hasattr(tel, 'device_metrics') or 'device_metrics' in tel:
+                    if hasattr(tel, 'device_metrics') or (isinstance(tel, dict) and 'device_metrics' in tel):
                         device_metrics = getattr(tel, 'device_metrics', None) or tel.get('device_metrics')
                         if device_metrics:
                             battery_level = getattr(device_metrics, 'battery_level', None) if hasattr(device_metrics, 'battery_level') else device_metrics.get('battery_level')
@@ -255,7 +258,7 @@ class MeshyMcMapfaceAgent:
                                 self.update_node_battery(packet_data['from_node'], battery_level)
                     
                     # Handle environment metrics
-                    if hasattr(tel, 'environment_metrics') or 'environment_metrics' in tel:
+                    if hasattr(tel, 'environment_metrics') or (isinstance(tel, dict) and 'environment_metrics' in tel):
                         env_metrics = getattr(tel, 'environment_metrics', None) or tel.get('environment_metrics')
                         if env_metrics:
                             telemetry_data['environment_metrics'] = {
@@ -295,7 +298,7 @@ class MeshyMcMapfaceAgent:
             else:
                 packet_data['type'] = 'encrypted'
                 packet_data['payload'] = None
-                self.logger.info(f"Encrypted packet from {packet_data['from_node']}")
+                self.logger.info(f"Encrypted/undecoded packet from {packet_data['from_node']}")
             
             # Buffer packet locally (thread-safe)
             self.packet_queue.put(packet_data)
