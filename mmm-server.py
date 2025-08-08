@@ -128,6 +128,8 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/nodes', self.get_nodes)
         self.app.router.add_get('/api/stats', self.get_stats)
         self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
+        self.app.router.add_get('/api/debug/nodes', self.debug_nodes)  # Debug nodes
+        self.app.router.add_get('/api/debug/packets', self.debug_packets)  # Debug packets
         
         # Web UI routes
         self.app.router.add_get('/', self.dashboard)
@@ -364,6 +366,69 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error in debug endpoint: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def debug_nodes(self, request):
+        """Debug endpoint to check nodes in database"""
+        try:
+            cursor = await self.db.execute('SELECT * FROM nodes')
+            nodes = await cursor.fetchall()
+            
+            self.logger.info(f"Debug: Found {len(nodes)} nodes in database")
+            for node in nodes:
+                self.logger.info(f"Debug: Node {node}")
+            
+            return web.json_response({
+                'count': len(nodes),
+                'nodes': [
+                    {
+                        'node_id': n[0],
+                        'agent_id': n[1],
+                        'last_seen': n[2],
+                        'battery_level': n[3],
+                        'position_lat': n[4],
+                        'position_lon': n[5],
+                        'rssi': n[6],
+                        'snr': n[7],
+                        'updated_at': n[8]
+                    } for n in nodes
+                ]
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error in debug nodes endpoint: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def debug_packets(self, request):
+        """Debug endpoint to check recent packets"""
+        try:
+            cursor = await self.db.execute('''
+                SELECT * FROM packets 
+                ORDER BY timestamp DESC 
+                LIMIT 20
+            ''')
+            packets = await cursor.fetchall()
+            
+            self.logger.info(f"Debug: Found {len(packets)} recent packets in database")
+            
+            return web.json_response({
+                'count': len(packets),
+                'packets': [
+                    {
+                        'id': p[0],
+                        'agent_id': p[1],
+                        'timestamp': p[2],
+                        'from_node': p[3],
+                        'to_node': p[4],
+                        'type': p[7],
+                        'rssi': p[9],
+                        'snr': p[10]
+                    } for p in packets
+                ]
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error in debug packets endpoint: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def get_packets(self, request):
