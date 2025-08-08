@@ -1,4 +1,31 @@
-#!/usr/bin/env python3
+def get_db_connection(self):
+        """Get a database connection for the current thread"""
+        conn = sqlite3.connect(self.db_path)
+        
+        # Create tables if they don't exist
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS packet_buffer (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                packet_data TEXT,
+                sent INTEGER DEFAULT 0
+            )
+        ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS node_status (
+                node_id TEXT PRIMARY KEY,
+                last_seen TEXT,
+                battery_level INTEGER,
+                position_lat REAL,
+                position_lon REAL,
+                rssi INTEGER,
+                snr REAL,
+                updated_at TEXT
+            )
+        ''')
+        conn.commit()
+        return conn#!/usr/bin/env python3
 """
 MeshyMcMapface Agent MVP - Connects to local Meshtastic node and reports to central server
 """
@@ -9,6 +36,8 @@ import json
 import logging
 import sqlite3
 import time
+import queue
+import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import configparser
@@ -53,6 +82,10 @@ class MeshyMcMapfaceAgent:
         self.node_status = {}
         self.running = True
         
+        # Thread-safe packet queue
+        self.packet_queue = queue.Queue()
+        self.node_queue = queue.Queue()
+        
         # Setup logging
         logging.basicConfig(level=logging.INFO, 
                           format='%(asctime)s - %(levelname)s - %(message)s')
@@ -64,31 +97,7 @@ class MeshyMcMapfaceAgent:
     def setup_database(self):
         """Initialize local SQLite database for buffering"""
         self.db_path = f"{self.agent_id}_buffer.db"
-        self.conn = sqlite3.connect(self.db_path)
-        
-        # Create tables
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS packet_buffer (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                packet_data TEXT,
-                sent INTEGER DEFAULT 0
-            )
-        ''')
-        
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS node_status (
-                node_id TEXT PRIMARY KEY,
-                last_seen TEXT,
-                battery_level INTEGER,
-                position_lat REAL,
-                position_lon REAL,
-                rssi INTEGER,
-                snr REAL,
-                updated_at TEXT
-            )
-        ''')
-        self.conn.commit()
+        # Note: We'll create connections in the specific threads that need them
     
     def connect_to_node(self):
         """Connect to Meshtastic node based on configuration"""
@@ -206,9 +215,9 @@ class MeshyMcMapfaceAgent:
                     except:
                         packet_data['payload'] = str(decoded)
             
-            # Buffer packet locally
-            self.buffer_packet(packet_data)
-            self.logger.debug(f"Buffered packet: {packet_data['type']} from {packet_data['from_node']}")
+            # Buffer packet locally (thread-safe)
+            self.packet_queue.put(packet_data)
+            self.logger.debug(f"Queued packet: {packet_data['type']} from {packet_data['from_node']}")
             
         except Exception as e:
             self.logger.error(f"Error processing packet: {e}")
@@ -265,26 +274,29 @@ class MeshyMcMapfaceAgent:
             }
             
             self.node_status[node_id] = status
-            self.update_node_status(status)
+            self.node_queue.put(status)
             
         except Exception as e:
             self.logger.error(f"Error updating node status: {e}")
     
     def buffer_packet(self, packet_data):
-        """Store packet in local buffer"""
+        """Store packet in local buffer - called from main thread"""
         try:
-            self.conn.execute('''
+            conn = self.get_db_connection()
+            conn.execute('''
                 INSERT INTO packet_buffer (timestamp, packet_data)
                 VALUES (?, ?)
             ''', (packet_data['timestamp'], json.dumps(packet_data)))
-            self.conn.commit()
+            conn.commit()
+            conn.close()
         except Exception as e:
             self.logger.error(f"Error buffering packet: {e}")
     
     def update_node_status(self, status):
-        """Update node status in local database"""
+        """Update node status in local database - called from main thread"""
         try:
-            self.conn.execute('''
+            conn = self.get_db_connection()
+            conn.execute('''
                 INSERT OR REPLACE INTO node_status 
                 (node_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -293,15 +305,39 @@ class MeshyMcMapfaceAgent:
                 status['position_lat'], status['position_lon'], 
                 status['rssi'], status['snr'], status['updated_at']
             ))
-            self.conn.commit()
+            conn.commit()
+            conn.close()
         except Exception as e:
             self.logger.error(f"Error updating node status: {e}")
+    
+    def process_queued_data(self):
+        """Process queued packets and node updates from main thread"""
+        # Process packets
+        while not self.packet_queue.empty():
+            try:
+                packet_data = self.packet_queue.get_nowait()
+                self.buffer_packet(packet_data)
+            except queue.Empty:
+                break
+            except Exception as e:
+                self.logger.error(f"Error processing queued packet: {e}")
+        
+        # Process node updates
+        while not self.node_queue.empty():
+            try:
+                status = self.node_queue.get_nowait()
+                self.update_node_status(status)
+            except queue.Empty:
+                break
+            except Exception as e:
+                self.logger.error(f"Error processing queued node status: {e}")
     
     async def send_data_to_server(self):
         """Send buffered data to central server"""
         try:
             # Get unsent packets
-            cursor = self.conn.execute('''
+            conn = self.get_db_connection()
+            cursor = conn.execute('''
                 SELECT id, packet_data FROM packet_buffer 
                 WHERE sent = 0 
                 ORDER BY timestamp 
@@ -310,11 +346,13 @@ class MeshyMcMapfaceAgent:
             packets = cursor.fetchall()
             
             if not packets:
+                conn.close()
                 return
             
             # Get current node status
-            cursor = self.conn.execute('SELECT * FROM node_status')
+            cursor = conn.execute('SELECT * FROM node_status')
             nodes = cursor.fetchall()
+            conn.close()
             
             # Prepare payload
             payload = {
@@ -352,14 +390,16 @@ class MeshyMcMapfaceAgent:
                 ) as response:
                     if response.status == 200:
                         # Mark packets as sent
+                        conn = self.get_db_connection()
                         packet_ids = [p[0] for p in packets]
                         placeholders = ','.join('?' * len(packet_ids))
-                        self.conn.execute(f'''
+                        conn.execute(f'''
                             UPDATE packet_buffer 
                             SET sent = 1 
                             WHERE id IN ({placeholders})
                         ''', packet_ids)
-                        self.conn.commit()
+                        conn.commit()
+                        conn.close()
                         
                         self.logger.info(f"Successfully sent {len(packets)} packets to server")
                     else:
@@ -375,12 +415,13 @@ class MeshyMcMapfaceAgent:
             cutoff = datetime.now(timezone.utc).timestamp() - (24 * 60 * 60)
             cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
             
-            self.conn.execute('''
+            conn = self.get_db_connection()
+            conn.execute('''
                 DELETE FROM packet_buffer 
                 WHERE sent = 1 AND timestamp < ?
             ''', (cutoff_iso,))
-            
-            self.conn.commit()
+            conn.commit()
+            conn.close()
             
         except Exception as e:
             self.logger.error(f"Error cleaning up old data: {e}")
@@ -397,6 +438,9 @@ class MeshyMcMapfaceAgent:
         # Main loop
         while self.running:
             try:
+                # Process any queued data from callback threads
+                self.process_queued_data()
+                
                 # Send data to server
                 await self.send_data_to_server()
                 
@@ -417,7 +461,6 @@ class MeshyMcMapfaceAgent:
         # Cleanup
         if self.interface:
             self.interface.close()
-        self.conn.close()
         self.logger.info("MeshyMcMapface Agent stopped")
 
 def create_sample_config():
