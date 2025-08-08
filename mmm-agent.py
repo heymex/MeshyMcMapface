@@ -1,64 +1,4 @@
-async def register_with_server(self):
-        """Register this agent with the central server"""
-        try:
-            payload = {
-                'agent_id': self.agent_id,
-                'location': {
-                    'name': self.location_name,
-                    'coordinates': [self.location_lat, self.location_lon]
-                }
-            }
-            
-            headers = {
-                'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.server_url}/api/agent/register",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        self.logger.info(f"Successfully registered with server: {result.get('agent_id')}")
-                        return True
-                    else:
-                        self.logger.error(f"Failed to register with server: {response.status}")
-                        return False
-                        
-        except Exception as e:
-            self.logger.error(f"Error registering with server: {e}")
-            return False    def get_db_connection(self):
-        """Get a database connection for the current thread"""
-        conn = sqlite3.connect(self.db_path)
-        
-        # Create tables if they don't exist
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS packet_buffer (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                packet_data TEXT,
-                sent INTEGER DEFAULT 0
-            )
-        ''')
-        
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS node_status (
-                node_id TEXT PRIMARY KEY,
-                last_seen TEXT,
-                battery_level INTEGER,
-                position_lat REAL,
-                position_lon REAL,
-                rssi INTEGER,
-                snr REAL,
-                updated_at TEXT
-            )
-        ''')
-        conn.commit()
-        return conn#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 MeshyMcMapface Agent MVP - Connects to local Meshtastic node and reports to central server
 """
@@ -71,6 +11,7 @@ import sqlite3
 import time
 import queue
 import threading
+import base64
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import configparser
@@ -193,6 +134,48 @@ class MeshyMcMapfaceAgent:
             self.logger.error(f"Failed to connect to Meshtastic node: {e}")
             return False
     
+    def _safe_convert(self, value):
+        """Safely convert values to JSON-serializable types"""
+        if isinstance(value, bytes):
+            # Convert bytes to base64 string
+            return base64.b64encode(value).decode('ascii')
+        elif hasattr(value, '__dict__'):
+            # Convert objects with __dict__ to dict
+            return {k: self._safe_convert(v) for k, v in value.__dict__.items()}
+        elif isinstance(value, (list, tuple)):
+            return [self._safe_convert(item) for item in value]
+        elif isinstance(value, dict):
+            return {k: self._safe_convert(v) for k, v in value.items()}
+        else:
+            return value
+    
+    def _convert_protobuf_to_dict(self, obj):
+        """Convert protobuf objects to dictionaries recursively"""
+        if hasattr(obj, 'ListFields'):
+            # This is a protobuf message
+            result = {}
+            for field, value in obj.ListFields():
+                if hasattr(value, 'ListFields'):
+                    result[field.name] = self._convert_protobuf_to_dict(value)
+                elif isinstance(value, (list, tuple)):
+                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
+                else:
+                    result[field.name] = self._safe_convert(value)
+            return result
+        elif isinstance(obj, dict):
+            # Already a dict, process recursively
+            result = {}
+            for key, value in obj.items():
+                if hasattr(value, 'ListFields'):
+                    result[key] = self._convert_protobuf_to_dict(value)
+                elif isinstance(value, (list, tuple)):
+                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
+                else:
+                    result[key] = self._safe_convert(value)
+            return result
+        else:
+            return self._safe_convert(obj)
+    
     def on_receive(self, packet, interface):
         """Handle received packets"""
         try:
@@ -286,49 +269,6 @@ class MeshyMcMapfaceAgent:
             # Log the problematic packet for debugging
             self.logger.debug(f"Problematic packet: {packet}")
     
-    def _convert_protobuf_to_dict(self, obj):
-        """Convert protobuf objects to dictionaries recursively"""
-        if hasattr(obj, 'ListFields'):
-            # This is a protobuf message
-            result = {}
-            for field, value in obj.ListFields():
-                if hasattr(value, 'ListFields'):
-                    result[field.name] = self._convert_protobuf_to_dict(value)
-                elif isinstance(value, (list, tuple)):
-                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
-                else:
-                    result[field.name] = self._safe_convert(value)
-            return result
-        elif isinstance(obj, dict):
-            # Already a dict, process recursively
-            result = {}
-            for key, value in obj.items():
-                if hasattr(value, 'ListFields'):
-                    result[key] = self._convert_protobuf_to_dict(value)
-                elif isinstance(value, (list, tuple)):
-                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
-                else:
-                    result[key] = self._safe_convert(value)
-            return result
-        else:
-            return self._safe_convert(obj)
-    
-    def _safe_convert(self, value):
-        """Safely convert values to JSON-serializable types"""
-        if isinstance(value, bytes):
-            # Convert bytes to base64 string
-            import base64
-            return base64.b64encode(value).decode('ascii')
-        elif hasattr(value, '__dict__'):
-            # Convert objects with __dict__ to dict
-            return {k: self._safe_convert(v) for k, v in value.__dict__.items()}
-        elif isinstance(value, (list, tuple)):
-            return [self._safe_convert(item) for item in value]
-        elif isinstance(value, dict):
-            return {k: self._safe_convert(v) for k, v in value.items()}
-        else:
-            return value
-    
     def on_connection(self, interface, topic=None):
         """Handle connection established"""
         self.logger.info("Meshtastic connection established")
@@ -409,6 +349,41 @@ class MeshyMcMapfaceAgent:
                 break
             except Exception as e:
                 self.logger.error(f"Error processing queued node status: {e}")
+    
+    async def register_with_server(self):
+        """Register this agent with the central server"""
+        try:
+            payload = {
+                'agent_id': self.agent_id,
+                'location': {
+                    'name': self.location_name,
+                    'coordinates': [self.location_lat, self.location_lon]
+                }
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': self.api_key
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.server_url}/api/agent/register",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        self.logger.info(f"Successfully registered with server: {result.get('agent_id')}")
+                        return True
+                    else:
+                        self.logger.error(f"Failed to register with server: {response.status}")
+                        return False
+                        
+        except Exception as e:
+            self.logger.error(f"Error registering with server: {e}")
+            return False
     
     async def send_data_to_server(self):
         """Send buffered data to central server"""
