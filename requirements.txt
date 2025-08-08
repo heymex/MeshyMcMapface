@@ -1,0 +1,56 @@
+# MeshyMcMapface MVP Requirements
+# Core dependencies for both agent and server components
+
+# Meshtastic Python library for device communication
+meshtastic>=2.5.0
+
+# Async HTTP client/server framework
+aiohttp>=3.9.0
+
+# Async SQLite database adapter
+aiosqlite>=0.19.0
+
+# Publish-subscribe messaging (required by meshtastic)
+pypubsub>=4.0.3
+
+# Serial communication (dependency of meshtastic)
+pyserial>=3.5
+
+# Protocol buffers (dependency of meshtastic)
+protobuf>=4.21.0
+
+# Configuration file parsing (built-in, but explicit for clarity)
+# configparser - built into Python standard library
+
+# Additional dependencies for enhanced functionality
+# Uncomment as needed for extended features
+
+# For HTTPS/TLS support
+# cryptography>=41.0.0
+
+# For advanced logging
+# structlog>=23.0.0
+
+# For monitoring and metrics
+# prometheus-client>=0.17.0
+
+# For data analysis and visualization
+# pandas>=2.0.0
+# matplotlib>=3.7.0
+
+# For geospatial operations
+# geopy>=2.3.0
+
+# For enhanced JSON handling
+# orjson>=3.9.0
+
+# Development and testing dependencies
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# flake8>=6.0.0
+
+# Production deployment dependencies
+# gunicorn>=21.0.0
+# docker>=6.1.0
+# supervisor>=4.2.0
