@@ -134,6 +134,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/agents', self.agents_page)
         self.app.router.add_get('/packets', self.packets_page)
         self.app.router.add_get('/nodes', self.nodes_page)
+        self.app.router.add_get('/map', self.map_page)
         
         # Static files (CSS, JS) - optional
         try:
@@ -372,17 +373,18 @@ class DistributedMeshyMcMapfaceServer:
             limit = int(request.query.get('limit', 100))
             agent_id = request.query.get('agent_id')
             packet_type = request.query.get('type')
+            hours = int(request.query.get('hours', 24))
             
             # Build query
             query = '''
                 SELECT p.*, a.location_name
                 FROM packets p
                 JOIN agents a ON p.agent_id = a.agent_id
-                WHERE 1=1
-            '''
+                WHERE datetime(p.timestamp) > datetime('now', '-{} hours')
+            '''.format(hours)
             params = []
             
-            if agent_id:
+            if agent_id and agent_id != 'all':
                 query += ' AND p.agent_id = ?'
                 params.append(agent_id)
             
@@ -421,6 +423,7 @@ class DistributedMeshyMcMapfaceServer:
         """Get node information across all agents"""
         try:
             agent_id = request.query.get('agent_id')
+            hours = int(request.query.get('hours', 24))
             
             # Build query
             query = '''
@@ -429,11 +432,11 @@ class DistributedMeshyMcMapfaceServer:
                        n.rssi, n.snr, n.updated_at
                 FROM nodes n
                 JOIN agents a ON n.agent_id = a.agent_id
-                WHERE datetime(n.updated_at) > datetime('now', '-24 hours')
-            '''
+                WHERE datetime(n.updated_at) > datetime('now', '-{} hours')
+            '''.format(hours)
             params = []
             
-            if agent_id:
+            if agent_id and agent_id != 'all':
                 query += ' AND n.agent_id = ?'
                 params.append(agent_id)
             
@@ -574,6 +577,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/agents">Agents</a>
             <a href="/packets">Packets</a>
             <a href="/nodes">Nodes</a>
+            <a href="/map">Map</a>
         </div>
         
         <div class="stats-grid" id="stats-grid">
@@ -777,6 +781,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/agents" class="active">Agents</a>
             <a href="/packets">Packets</a>
             <a href="/nodes">Nodes</a>
+            <a href="/map">Map</a>
         </div>
         
         <div class="section">
@@ -859,9 +864,425 @@ class DistributedMeshyMcMapfaceServer:
         """Packets page with filtering"""
         return web.Response(text="Packets page - TODO", content_type='text/html')
     
-    async def nodes_page(self, request):
-        """Nodes page with map"""
-        return web.Response(text="Nodes page - TODO", content_type='text/html')
+    async def map_page(self, request):
+        """Interactive map page showing nodes and agents"""
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Network Map - MeshyMcMapface</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+        .nav a.active { background: #2196F3; color: white; }
+        .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+        .control-group { display: flex; gap: 5px; align-items: center; }
+        .control-group label { font-weight: bold; }
+        .control-group select, .control-group input { padding: 5px; border: 1px solid #ddd; border-radius: 4px; }
+        #map { height: 600px; width: 100%; border-radius: 8px; }
+        .legend { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-top: 20px; }
+        .legend h3 { margin-top: 0; }
+        .legend-item { display: flex; align-items: center; margin: 10px 0; }
+        .legend-icon { width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+        .stats-bar { display: flex; gap: 20px; margin-bottom: 20px; }
+        .stat { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; min-width: 120px; }
+        .stat-number { font-size: 1.5em; font-weight: bold; color: #2196F3; }
+        .stat-label { color: #666; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>MeshyMcMapface Network Map</h1>
+            <p>Real-time visualization of mesh network nodes and agents</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents">Agents</a>
+            <a href="/packets">Packets</a>
+            <a href="/nodes">Nodes</a>
+            <a href="/map" class="active">Map</a>
+        </div>
+        
+        <div class="stats-bar">
+            <div class="stat">
+                <div class="stat-number" id="total-nodes">-</div>
+                <div class="stat-label">Total Nodes</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="active-nodes">-</div>
+                <div class="stat-label">Active Nodes</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="total-agents">-</div>
+                <div class="stat-label">Agents</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="coverage-area">-</div>
+                <div class="stat-label">Coverage (km²)</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="controls">
+                <div class="control-group">
+                    <label>Show:</label>
+                    <select id="filter-type">
+                        <option value="all">All Nodes</option>
+                        <option value="active">Active Only</option>
+                        <option value="agents">Agents Only</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Agent:</label>
+                    <select id="filter-agent">
+                        <option value="all">All Agents</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Time Range:</label>
+                    <select id="time-range">
+                        <option value="1">Last 1 Hour</option>
+                        <option value="6">Last 6 Hours</option>
+                        <option value="24" selected>Last 24 Hours</option>
+                        <option value="168">Last Week</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <input type="checkbox" id="show-connections" checked>
+                    <label for="show-connections">Show Connections</label>
+                </div>
+                <div class="control-group">
+                    <button onclick="refreshMap()" style="padding: 5px 15px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Refresh</button>
+                </div>
+            </div>
+            
+            <div id="map"></div>
+        </div>
+        
+        <div class="legend">
+            <h3>Map Legend</h3>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #4CAF50;"></div>
+                <span>Active Mesh Node (seen in last hour)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #FF9800;"></div>
+                <span>Inactive Mesh Node (older than 1 hour)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #2196F3; transform: scale(1.3);"></div>
+                <span>MeshyMcMapface Agent</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #f44336;"></div>
+                <span>Node with Low Battery (<20%)</span>
+            </div>
+            <div style="margin-top: 10px;">
+                <strong>Lines:</strong> Recent packet transmissions between nodes
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map;
+        let markers = new Map();
+        let connections = [];
+        let nodeData = [];
+        let agentData = [];
+        
+        // Initialize map
+        function initMap() {
+            map = L.map('map').setView([39.8283, -98.5795], 4); // Center of US
+            
+            // Add tile layer
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+        }
+        
+        // Load and display data
+        async function loadMapData() {
+            try {
+                // Load nodes
+                const timeRange = document.getElementById('time-range').value;
+                const agentFilter = document.getElementById('filter-agent').value;
+                
+                let nodesUrl = `/api/nodes?hours=${timeRange}`;
+                if (agentFilter !== 'all') {
+                    nodesUrl += `&agent_id=${agentFilter}`;
+                }
+                
+                const nodesResponse = await fetch(nodesUrl);
+                const nodesData = await nodesResponse.json();
+                nodeData = nodesData.nodes || [];
+                
+                // Load agents
+                const agentsResponse = await fetch('/api/agents');
+                const agentsData = await agentsResponse.json();
+                agentData = agentsData.agents || [];
+                
+                // Load recent packets for connections
+                const packetsResponse = await fetch(`/api/packets?limit=500&hours=${timeRange}`);
+                const packetsData = await packetsResponse.json();
+                
+                displayNodes();
+                displayAgents();
+                displayConnections(packetsData.packets || []);
+                updateStats();
+                updateAgentFilter();
+                
+            } catch (error) {
+                console.error('Error loading map data:', error);
+            }
+        }
+        
+        function displayNodes() {
+            const filterType = document.getElementById('filter-type').value;
+            const now = new Date();
+            
+            // Clear existing node markers
+            markers.forEach((marker, key) => {
+                if (key.startsWith('node_')) {
+                    map.removeLayer(marker);
+                    markers.delete(key);
+                }
+            });
+            
+            nodeData.forEach(node => {
+                if (!node.position || node.position[0] === null || node.position[1] === null) return;
+                
+                const lastSeen = new Date(node.updated_at);
+                const hoursOld = (now - lastSeen) / (1000 * 60 * 60);
+                const isActive = hoursOld < 1;
+                
+                // Apply filter
+                if (filterType === 'active' && !isActive) return;
+                if (filterType === 'agents') return; // Skip nodes when showing agents only
+                
+                // Determine color based on status
+                let color = '#4CAF50'; // Active
+                if (!isActive) color = '#FF9800'; // Inactive
+                if (node.battery_level && node.battery_level < 20) color = '#f44336'; // Low battery
+                
+                // Create marker
+                const marker = L.circleMarker([node.position[0], node.position[1]], {
+                    radius: 8,
+                    fillColor: color,
+                    color: '#fff',
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.8
+                });
+                
+                // Create popup content
+                const popupContent = `
+                    <strong>Node: ${node.node_id}</strong><br>
+                    Agent: ${node.agent_location}<br>
+                    Last Seen: ${lastSeen.toLocaleString()}<br>
+                    ${node.battery_level ? `Battery: ${node.battery_level}%<br>` : ''}
+                    ${node.rssi ? `RSSI: ${node.rssi} dBm<br>` : ''}
+                    ${node.snr ? `SNR: ${node.snr} dB` : ''}
+                `;
+                
+                marker.bindPopup(popupContent);
+                marker.addTo(map);
+                markers.set(`node_${node.node_id}`, marker);
+            });
+        }
+        
+        function displayAgents() {
+            const filterType = document.getElementById('filter-type').value;
+            
+            // Clear existing agent markers
+            markers.forEach((marker, key) => {
+                if (key.startsWith('agent_')) {
+                    map.removeLayer(marker);
+                    markers.delete(key);
+                }
+            });
+            
+            if (filterType === 'nodes') return; // Skip agents when showing nodes only
+            
+            agentData.forEach(agent => {
+                if (!agent.coordinates || agent.coordinates.length !== 2) return;
+                
+                const lastSeen = new Date(agent.last_seen);
+                const isActive = (new Date() - lastSeen) < (60 * 60 * 1000); // 1 hour
+                
+                // Create agent marker (larger, different style)
+                const marker = L.circleMarker([agent.coordinates[0], agent.coordinates[1]], {
+                    radius: 12,
+                    fillColor: '#2196F3',
+                    color: '#fff',
+                    weight: 3,
+                    opacity: 1,
+                    fillOpacity: 0.9
+                });
+                
+                const popupContent = `
+                    <strong>🏢 Agent: ${agent.agent_id}</strong><br>
+                    Location: ${agent.location_name}<br>
+                    Last Seen: ${lastSeen.toLocaleString()}<br>
+                    Status: ${isActive ? '✅ Active' : '❌ Inactive'}<br>
+                    Total Packets: ${agent.packet_count}
+                `;
+                
+                marker.bindPopup(popupContent);
+                marker.addTo(map);
+                markers.set(`agent_${agent.agent_id}`, marker);
+            });
+        }
+        
+        function displayConnections(packets) {
+            const showConnections = document.getElementById('show-connections').checked;
+            
+            // Clear existing connections
+            connections.forEach(line => map.removeLayer(line));
+            connections = [];
+            
+            if (!showConnections) return;
+            
+            // Create connections from recent packets
+            const connectionMap = new Map();
+            
+            packets.forEach(packet => {
+                if (packet.type === 'text_message' && packet.from_node && packet.to_node !== '^all') {
+                    const key = `${packet.from_node}-${packet.to_node}`;
+                    if (!connectionMap.has(key)) {
+                        connectionMap.set(key, { count: 0, latest: packet.timestamp });
+                    }
+                    connectionMap.get(key).count++;
+                    if (packet.timestamp > connectionMap.get(key).latest) {
+                        connectionMap.get(key).latest = packet.timestamp;
+                    }
+                }
+            });
+            
+            connectionMap.forEach((data, key) => {
+                const [fromNode, toNode] = key.split('-');
+                const fromMarker = markers.get(`node_${fromNode}`);
+                const toMarker = markers.get(`node_${toNode}`);
+                
+                if (fromMarker && toMarker) {
+                    const line = L.polyline([
+                        fromMarker.getLatLng(),
+                        toMarker.getLatLng()
+                    ], {
+                        color: '#666',
+                        weight: Math.min(data.count, 5),
+                        opacity: 0.6
+                    });
+                    
+                    line.bindPopup(`
+                        <strong>Connection</strong><br>
+                        From: ${fromNode}<br>
+                        To: ${toNode}<br>
+                        Messages: ${data.count}<br>
+                        Latest: ${new Date(data.latest).toLocaleString()}
+                    `);
+                    
+                    line.addTo(map);
+                    connections.push(line);
+                }
+            });
+        }
+        
+        function updateStats() {
+            const now = new Date();
+            const activeNodes = nodeData.filter(node => {
+                const lastSeen = new Date(node.updated_at);
+                return (now - lastSeen) < (60 * 60 * 1000);
+            }).length;
+            
+            document.getElementById('total-nodes').textContent = nodeData.length;
+            document.getElementById('active-nodes').textContent = activeNodes;
+            document.getElementById('total-agents').textContent = agentData.length;
+            
+            // Calculate rough coverage area
+            const positions = [...nodeData, ...agentData].map(item => 
+                item.position || item.coordinates
+            ).filter(pos => pos && pos[0] && pos[1]);
+            
+            let area = 0;
+            if (positions.length > 2) {
+                const lats = positions.map(p => p[0]);
+                const lons = positions.map(p => p[1]);
+                const latRange = Math.max(...lats) - Math.min(...lats);
+                const lonRange = Math.max(...lons) - Math.min(...lons);
+                area = Math.round(latRange * lonRange * 111 * 111); // Rough km²
+            }
+            
+            document.getElementById('coverage-area').textContent = area > 0 ? area : '-';
+        }
+        
+        function updateAgentFilter() {
+            const select = document.getElementById('filter-agent');
+            const currentValue = select.value;
+            
+            // Clear existing options except "All Agents"
+            select.innerHTML = '<option value="all">All Agents</option>';
+            
+            // Add agent options
+            agentData.forEach(agent => {
+                const option = document.createElement('option');
+                option.value = agent.agent_id;
+                option.textContent = `${agent.agent_id} (${agent.location_name})`;
+                select.appendChild(option);
+            });
+            
+            // Restore previous selection
+            select.value = currentValue;
+        }
+        
+        function refreshMap() {
+            loadMapData();
+        }
+        
+        // Auto-fit map to show all markers
+        function fitMapToMarkers() {
+            if (markers.size > 0) {
+                const group = new L.featureGroup([...markers.values()]);
+                map.fitBounds(group.getBounds().pad(0.1));
+            }
+        }
+        
+        // Event listeners
+        document.getElementById('filter-type').addEventListener('change', () => {
+            displayNodes();
+            displayAgents();
+        });
+        
+        document.getElementById('filter-agent').addEventListener('change', refreshMap);
+        document.getElementById('time-range').addEventListener('change', refreshMap);
+        document.getElementById('show-connections').addEventListener('change', () => {
+            displayConnections([]); // Will reload connections based on current data
+        });
+        
+        // Initialize
+        initMap();
+        loadMapData();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadMapData, 30000);
+        
+        // Fit map after initial load
+        setTimeout(fitMapToMarkers, 2000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
     
     async def start_server(self):
         """Start the web server"""
