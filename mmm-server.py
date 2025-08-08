@@ -1,697 +1,1535 @@
 #!/usr/bin/env python3
 """
-MeshyMcMapface Agent MVP - Connects to local Meshtastic node and reports to central server
+Enhanced MeshyMcMapface Server MVP - Receives data from multiple agents
 """
 
 import asyncio
 import aiohttp
+from aiohttp import web, web_middlewares
+import aiosqlite
 import json
 import logging
-import sqlite3
-import time
-import queue
-import threading
-import base64
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 import configparser
 import argparse
-import sys
 from pathlib import Path
+import hashlib
+import secrets
+from typing import Dict, List, Optional
 
-# Meshtastic imports
-try:
-    import meshtastic
-    import meshtastic.serial_interface
-    import meshtastic.tcp_interface
-    import meshtastic.ble_interface
-    from pubsub import pub
-except ImportError:
-    print("Error: Meshtastic library not installed. Run: pip install meshtastic")
-    sys.exit(1)
-
-class MeshyMcMapfaceAgent:
+class DistributedMeshyMcMapfaceServer:
     def __init__(self, config_file: str):
         self.config = configparser.ConfigParser()
         self.config.read(config_file)
         
         # Configuration
-        self.agent_id = self.config.get('agent', 'id')
-        self.location_name = self.config.get('agent', 'location_name')
-        self.location_lat = self.config.getfloat('agent', 'location_lat')
-        self.location_lon = self.config.getfloat('agent', 'location_lon')
+        self.bind_host = self.config.get('server', 'host', fallback='localhost')
+        self.bind_port = self.config.getint('server', 'port', fallback=8082)
+        self.db_path = self.config.get('database', 'path', fallback='distributed_meshview.db')
         
-        self.server_url = self.config.get('server', 'url')
-        self.api_key = self.config.get('server', 'api_key')
-        self.report_interval = self.config.getint('server', 'report_interval', fallback=30)
-        
-        self.connection_type = self.config.get('meshtastic', 'connection_type', fallback='auto')
-        self.device_path = self.config.get('meshtastic', 'device_path', fallback=None)
-        self.tcp_host = self.config.get('meshtastic', 'tcp_host', fallback=None)
-        self.ble_address = self.config.get('meshtastic', 'ble_address', fallback=None)
-        
-        # State
-        self.interface = None
-        self.packet_buffer = []
-        self.node_status = {}
-        self.running = True
-        
-        # Thread-safe packet queue
-        self.packet_queue = queue.Queue()
-        self.node_queue = queue.Queue()
+        # API Keys for agents
+        self.api_keys = {}
+        if self.config.has_section('api_keys'):
+            self.api_keys = dict(self.config.items('api_keys'))
         
         # Setup logging
         logging.basicConfig(level=logging.INFO, 
                           format='%(asctime)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
         
-        # Setup local database
-        self.setup_database()
-        
-    def setup_database(self):
-        """Initialize local SQLite database for buffering"""
-        self.db_path = f"{self.agent_id}_buffer.db"
-        # Note: We'll create connections in the specific threads that need them
+        # Web app
+        self.app = web.Application(middlewares=[self.auth_middleware])
+        self.setup_routes()
     
-    def get_db_connection(self):
-        """Get a database connection for the current thread"""
-        conn = sqlite3.connect(self.db_path)
+    async def setup_database(self):
+        """Initialize SQLite database with tables for distributed data"""
+        self.db = await aiosqlite.connect(self.db_path)
         
-        # Create tables if they don't exist
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS packet_buffer (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                packet_data TEXT,
-                sent INTEGER DEFAULT 0
+        # Agents table
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS agents (
+                agent_id TEXT PRIMARY KEY,
+                location_name TEXT,
+                location_lat REAL,
+                location_lon REAL,
+                last_seen TEXT,
+                packet_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active'
             )
         ''')
         
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS node_status (
-                node_id TEXT PRIMARY KEY,
+        # Enhanced packets table with agent information
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS packets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT,
+                timestamp TEXT,
+                from_node TEXT,
+                to_node TEXT,
+                packet_id INTEGER,
+                channel INTEGER,
+                type TEXT,
+                payload TEXT,
+                rssi INTEGER,
+                snr REAL,
+                hop_limit INTEGER,
+                want_ack BOOLEAN,
+                import_time TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (agent_id) REFERENCES agents (agent_id)
+            )
+        ''')
+        
+        # Enhanced nodes table with agent tracking
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS nodes (
+                node_id TEXT,
+                agent_id TEXT,
                 last_seen TEXT,
                 battery_level INTEGER,
                 position_lat REAL,
                 position_lon REAL,
                 rssi INTEGER,
                 snr REAL,
-                updated_at TEXT
+                updated_at TEXT,
+                PRIMARY KEY (node_id, agent_id),
+                FOREIGN KEY (agent_id) REFERENCES agents (agent_id)
             )
         ''')
-        conn.commit()
-        return conn
+        
+        # Agent health metrics
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS agent_health (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT,
+                timestamp TEXT,
+                packets_received INTEGER,
+                nodes_active INTEGER,
+                connection_status TEXT,
+                FOREIGN KEY (agent_id) REFERENCES agents (agent_id)
+            )
+        ''')
+        
+        # Create indexes for performance
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_timestamp ON packets(timestamp)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_agent ON packets(agent_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(agent_id)')
+        
+        await self.db.commit()
+        self.logger.info("Database initialized")
     
-    def connect_to_node(self):
-        """Connect to Meshtastic node based on configuration"""
+    def setup_routes(self):
+        """Setup web routes"""
+        # API routes
+        self.app.router.add_post('/api/agent/register', self.register_agent)
+        self.app.router.add_post('/api/agent/data', self.receive_agent_data)
+        self.app.router.add_get('/api/agents', self.list_agents)
+        self.app.router.add_get('/api/agents/{agent_id}/status', self.agent_status)
+        self.app.router.add_get('/api/packets', self.get_packets)
+        self.app.router.add_get('/api/nodes', self.get_nodes)
+        self.app.router.add_get('/api/stats', self.get_stats)
+        self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
+        self.app.router.add_get('/api/debug/nodes', self.debug_nodes)  # Debug nodes
+        self.app.router.add_get('/api/debug/packets', self.debug_packets)  # Debug packets
+        
+        # Web UI routes
+        self.app.router.add_get('/', self.dashboard)
+        self.app.router.add_get('/agents', self.agents_page)
+        self.app.router.add_get('/packets', self.packets_page)
+        self.app.router.add_get('/nodes', self.nodes_page)
+        self.app.router.add_get('/map', self.map_page)
+        
+        # Static files (CSS, JS) - optional
         try:
-            if self.connection_type == 'serial' or (self.connection_type == 'auto' and self.device_path):
-                self.logger.info(f"Connecting via serial to {self.device_path}")
-                self.interface = meshtastic.serial_interface.SerialInterface(devPath=self.device_path)
+            from pathlib import Path
+            if Path('static').exists():
+                self.app.router.add_static('/static/', path='static/', name='static')
+        except Exception as e:
+            self.logger.debug(f"Static files directory not found: {e}")
+    
+    @web_middlewares.middleware
+    async def auth_middleware(self, request, handler):
+        """Authentication middleware for API endpoints"""
+        # Skip auth for debug endpoints and web UI API calls
+        if (request.path.startswith('/api/debug/') or 
+            request.path in ['/api/agents', '/api/packets', '/api/nodes', '/api/stats'] or
+            request.method == 'GET'):
+            return await handler(request)
+            
+        # Require auth for POST endpoints (agent data submission)
+        if request.path.startswith('/api/'):
+            api_key = request.headers.get('X-API-Key')
+            if not api_key or api_key not in self.api_keys.values():
+                return web.json_response({'error': 'Invalid API key'}, status=401)
+        
+        return await handler(request)
+    
+    async def register_agent(self, request):
+        """Register a new agent"""
+        try:
+            data = await request.json()
+            
+            agent_id = data['agent_id']
+            location_name = data['location']['name']
+            location_lat = data['location']['coordinates'][0]
+            location_lon = data['location']['coordinates'][1]
+            
+            await self.db.execute('''
+                INSERT OR REPLACE INTO agents 
+                (agent_id, location_name, location_lat, location_lon, last_seen, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (agent_id, location_name, location_lat, location_lon, 
+                  datetime.now(timezone.utc).isoformat(), 'active'))
+            
+            await self.db.commit()
+            
+            self.logger.info(f"Registered agent: {agent_id} at {location_name}")
+            return web.json_response({'status': 'success', 'agent_id': agent_id})
+            
+        except Exception as e:
+            self.logger.error(f"Error registering agent: {e}")
+            return web.json_response({'error': str(e)}, status=400)
+    
+    async def receive_agent_data(self, request):
+        """Receive data from agent"""
+        try:
+            data = await request.json()
+            
+            agent_id = data['agent_id']
+            timestamp = data['timestamp']
+            packets = data.get('packets', [])
+            node_status = data.get('node_status', [])
+            
+            # Update agent last seen
+            await self.db.execute('''
+                UPDATE agents 
+                SET last_seen = ?, packet_count = packet_count + ?
+                WHERE agent_id = ?
+            ''', (timestamp, len(packets), agent_id))
+            
+            # Insert packets
+            for packet in packets:
+                await self.db.execute('''
+                    INSERT INTO packets 
+                    (agent_id, timestamp, from_node, to_node, packet_id, channel, 
+                     type, payload, rssi, snr, hop_limit, want_ack)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    agent_id, packet['timestamp'], packet.get('from_node'),
+                    packet.get('to_node'), packet.get('packet_id'), packet.get('channel'),
+                    packet.get('type'), json.dumps(packet.get('payload')),
+                    packet.get('rssi'), packet.get('snr'), packet.get('hop_limit'),
+                    packet.get('want_ack')
+                ))
+            
+            # Update node status
+            for node in node_status:
+                if not node['node_id']:
+                    continue
+                    
+                position_lat, position_lon = None, None
+                if node.get('position'):
+                    position_lat, position_lon = node['position']
                 
-            elif self.connection_type == 'tcp' or (self.connection_type == 'auto' and self.tcp_host):
-                self.logger.info(f"Connecting via TCP to {self.tcp_host}")
-                self.interface = meshtastic.tcp_interface.TCPInterface(hostname=self.tcp_host)
-                
-            elif self.connection_type == 'ble' or (self.connection_type == 'auto' and self.ble_address):
-                self.logger.info(f"Connecting via BLE to {self.ble_address}")
-                self.interface = meshtastic.ble_interface.BLEInterface(address=self.ble_address)
-                
-            else:
-                # Auto-detect
-                self.logger.info("Auto-detecting Meshtastic device...")
-                self.interface = meshtastic.serial_interface.SerialInterface()
+                await self.db.execute('''
+                    INSERT OR REPLACE INTO nodes
+                    (node_id, agent_id, last_seen, battery_level, position_lat, 
+                     position_lon, rssi, snr, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    node['node_id'], agent_id, node['last_seen'],
+                    node.get('battery_level'), position_lat, position_lon,
+                    node.get('rssi'), node.get('snr'), timestamp
+                ))
             
-            # Subscribe to events
-            pub.subscribe(self.on_receive, "meshtastic.receive")
-            pub.subscribe(self.on_connection, "meshtastic.connection.established")
-            pub.subscribe(self.on_node_updated, "meshtastic.node.updated")
+            # Record health metrics
+            await self.db.execute('''
+                INSERT INTO agent_health
+                (agent_id, timestamp, packets_received, nodes_active, connection_status)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (agent_id, timestamp, len(packets), len(node_status), 'connected'))
             
-            self.logger.info("Successfully connected to Meshtastic node")
-            return True
+            await self.db.commit()
             
-        except Exception as e:
-            self.logger.error(f"Failed to connect to Meshtastic node: {e}")
-            return False
-    
-    def _safe_convert(self, value):
-        """Safely convert values to JSON-serializable types"""
-        if isinstance(value, bytes):
-            # Convert bytes to base64 string
-            return base64.b64encode(value).decode('ascii')
-        elif hasattr(value, '__dict__'):
-            # Convert objects with __dict__ to dict
-            return {k: self._safe_convert(v) for k, v in value.__dict__.items()}
-        elif isinstance(value, (list, tuple)):
-            return [self._safe_convert(item) for item in value]
-        elif isinstance(value, dict):
-            return {k: self._safe_convert(v) for k, v in value.items()}
-        else:
-            return value
-    
-    def _convert_protobuf_to_dict(self, obj):
-        """Convert protobuf objects to dictionaries recursively"""
-        if hasattr(obj, 'ListFields'):
-            # This is a protobuf message
-            result = {}
-            for field, value in obj.ListFields():
-                if hasattr(value, 'ListFields'):
-                    result[field.name] = self._convert_protobuf_to_dict(value)
-                elif isinstance(value, (list, tuple)):
-                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
-                else:
-                    result[field.name] = self._safe_convert(value)
-            return result
-        elif isinstance(obj, dict):
-            # Already a dict, process recursively
-            result = {}
-            for key, value in obj.items():
-                if hasattr(value, 'ListFields'):
-                    result[key] = self._convert_protobuf_to_dict(value)
-                elif isinstance(value, (list, tuple)):
-                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
-                else:
-                    result[key] = self._safe_convert(value)
-            return result
-        else:
-            return self._safe_convert(obj)
-    
-    def on_receive(self, packet, interface):
-        """Handle received packets"""
-        try:
-            # Debug: Log all received packets
-            self.logger.info(f"Received packet: {packet}")
-            
-            # Convert packet to JSON-serializable format
-            packet_data = {
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'from_node': packet.get('fromId', ''),
-                'to_node': packet.get('toId', ''),
-                'packet_id': packet.get('id', 0),
-                'channel': packet.get('channel', 0),
-                'hop_limit': packet.get('hopLimit', 0),
-                'want_ack': packet.get('wantAck', False),
-                'rssi': packet.get('rssi', None),
-                'snr': packet.get('snr', None)
-            }
-            
-            self.logger.info(f"Parsed packet data: from={packet_data['from_node']}, to={packet_data['to_node']}, type={packet.get('decoded', {}).get('portnum', 'unknown')}")
-            
-            # Update node information from any packet (not just node updates)
-            if packet_data['from_node']:
-                self.logger.info(f"Updating node info for: {packet_data['from_node']}")
-                self.update_node_from_packet(packet_data['from_node'], packet_data)
-            
-            # Handle different payload types
-            if 'decoded' in packet:
-                decoded = packet['decoded']
-                packet_data['port_num'] = decoded.get('portnum', '')
-                
-                if 'text' in decoded:
-                    packet_data['type'] = 'text_message'
-                    packet_data['payload'] = decoded['text']
-                    self.logger.info(f"Text message from {packet_data['from_node']}: {decoded['text']}")
-                    
-                elif 'position' in decoded:
-                    packet_data['type'] = 'position'
-                    pos = decoded['position']
-                    # Convert protobuf position to dict
-                    position_data = {
-                        'latitude': getattr(pos, 'latitude', 0) if hasattr(pos, 'latitude') else pos.get('latitude', 0),
-                        'longitude': getattr(pos, 'longitude', 0) if hasattr(pos, 'longitude') else pos.get('longitude', 0),
-                        'altitude': getattr(pos, 'altitude', 0) if hasattr(pos, 'altitude') else pos.get('altitude', 0),
-                        'time': getattr(pos, 'time', 0) if hasattr(pos, 'time') else pos.get('time', 0)
-                    }
-                    packet_data['payload'] = position_data
-                    
-                    self.logger.info(f"Position from {packet_data['from_node']}: lat={position_data['latitude']}, lon={position_data['longitude']}")
-                    
-                    # Update node position from position packet
-                    if packet_data['from_node'] and position_data['latitude'] and position_data['longitude']:
-                        self.update_node_position(packet_data['from_node'], position_data)
-                    
-                elif 'telemetry' in decoded:
-                    packet_data['type'] = 'telemetry'
-                    tel = decoded['telemetry']
-                    # Convert protobuf telemetry to dict
-                    telemetry_data = {}
-                    
-                    # Handle device metrics
-                    if hasattr(tel, 'device_metrics') or 'device_metrics' in tel:
-                        device_metrics = getattr(tel, 'device_metrics', None) or tel.get('device_metrics')
-                        if device_metrics:
-                            battery_level = getattr(device_metrics, 'battery_level', None) if hasattr(device_metrics, 'battery_level') else device_metrics.get('battery_level')
-                            telemetry_data['device_metrics'] = {
-                                'battery_level': battery_level,
-                                'voltage': getattr(device_metrics, 'voltage', None) if hasattr(device_metrics, 'voltage') else device_metrics.get('voltage'),
-                                'channel_utilization': getattr(device_metrics, 'channel_utilization', None) if hasattr(device_metrics, 'channel_utilization') else device_metrics.get('channel_utilization'),
-                                'air_util_tx': getattr(device_metrics, 'air_util_tx', None) if hasattr(device_metrics, 'air_util_tx') else device_metrics.get('air_util_tx')
-                            }
-                            
-                            self.logger.info(f"Telemetry from {packet_data['from_node']}: battery={battery_level}%")
-                            
-                            # Update node battery level from telemetry
-                            if packet_data['from_node'] and battery_level is not None:
-                                self.update_node_battery(packet_data['from_node'], battery_level)
-                    
-                    # Handle environment metrics
-                    if hasattr(tel, 'environment_metrics') or 'environment_metrics' in tel:
-                        env_metrics = getattr(tel, 'environment_metrics', None) or tel.get('environment_metrics')
-                        if env_metrics:
-                            telemetry_data['environment_metrics'] = {
-                                'temperature': getattr(env_metrics, 'temperature', None) if hasattr(env_metrics, 'temperature') else env_metrics.get('temperature'),
-                                'relative_humidity': getattr(env_metrics, 'relative_humidity', None) if hasattr(env_metrics, 'relative_humidity') else env_metrics.get('relative_humidity'),
-                                'barometric_pressure': getattr(env_metrics, 'barometric_pressure', None) if hasattr(env_metrics, 'barometric_pressure') else env_metrics.get('barometric_pressure')
-                            }
-                    
-                    packet_data['payload'] = telemetry_data
-                    
-                elif 'user' in decoded:
-                    packet_data['type'] = 'user_info'
-                    user = decoded['user']
-                    # Convert protobuf user to dict
-                    user_data = {
-                        'id': getattr(user, 'id', '') if hasattr(user, 'id') else user.get('id', ''),
-                        'long_name': getattr(user, 'long_name', '') if hasattr(user, 'long_name') else user.get('long_name', ''),
-                        'short_name': getattr(user, 'short_name', '') if hasattr(user, 'short_name') else user.get('short_name', ''),
-                        'hw_model': getattr(user, 'hw_model', 0) if hasattr(user, 'hw_model') else user.get('hw_model', 0)
-                    }
-                    packet_data['payload'] = user_data
-                    
-                    self.logger.info(f"User info from {packet_data['from_node']}: {user_data['long_name']} ({user_data['short_name']})")
-                    
-                    # Update node user info
-                    if packet_data['from_node']:
-                        self.update_node_user_info(packet_data['from_node'], user_data)
-                    
-                else:
-                    packet_data['type'] = 'other'
-                    self.logger.info(f"Other packet from {packet_data['from_node']}: portnum={packet_data.get('port_num')}")
-                    # Try to convert any protobuf objects to strings
-                    try:
-                        packet_data['payload'] = self._convert_protobuf_to_dict(decoded)
-                    except:
-                        packet_data['payload'] = self._safe_convert(decoded)
-            else:
-                packet_data['type'] = 'encrypted'
-                packet_data['payload'] = None
-                self.logger.info(f"Encrypted packet from {packet_data['from_node']}")
-            
-            # Buffer packet locally (thread-safe)
-            self.packet_queue.put(packet_data)
-            self.logger.debug(f"Queued packet: {packet_data['type']} from {packet_data['from_node']}")
+            self.logger.debug(f"Received {len(packets)} packets from {agent_id}")
+            return web.json_response({'status': 'success', 'received': len(packets)})
             
         except Exception as e:
-            self.logger.error(f"Error processing packet: {e}")
-            # Log the problematic packet for debugging
-            self.logger.error(f"Problematic packet: {packet}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            self.logger.error(f"Error receiving agent data: {e}")
+            return web.json_response({'error': str(e)}, status=400)
     
-    def update_node_from_packet(self, node_id, packet_data):
-        """Update node information from any packet"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        self.logger.info(f"Creating/updating node: {node_id}")
-        
-        status = {
-            'node_id': node_id,
-            'last_seen': packet_data['timestamp'],
-            'battery_level': None,
-            'position_lat': None,
-            'position_lon': None,
-            'rssi': packet_data.get('rssi'),
-            'snr': packet_data.get('snr'),
-            'updated_at': packet_data['timestamp']
-        }
-        
-        self.node_status[node_id] = status
-        self.node_queue.put(status)
-        self.logger.info(f"Node {node_id} queued for database update")
-    
-    def update_node_position(self, node_id, position_data):
-        """Update node position from position packet"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        self.logger.info(f"Updating position for node {node_id}: {position_data['latitude']}, {position_data['longitude']}")
-        
-        if node_id in self.node_status:
-            self.node_status[node_id]['position_lat'] = position_data['latitude']
-            self.node_status[node_id]['position_lon'] = position_data['longitude']
-            self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
-            self.node_queue.put(self.node_status[node_id])
-        else:
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': None,
-                'position_lat': position_data['latitude'],
-                'position_lon': position_data['longitude'],
-                'rssi': None,
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-        
-        self.logger.info(f"Node {node_id} position queued for database update")
-    
-    def update_node_battery(self, node_id, battery_level):
-        """Update node battery level from telemetry"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        self.logger.info(f"Updating battery for node {node_id}: {battery_level}%")
-        
-        if node_id in self.node_status:
-            self.node_status[node_id]['battery_level'] = battery_level
-            self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
-            self.node_queue.put(self.node_status[node_id])
-        else:
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': battery_level,
-                'position_lat': None,
-                'position_lon': None,
-                'rssi': None,
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-        
-        self.logger.info(f"Node {node_id} battery queued for database update")
-    
-    def update_node_user_info(self, node_id, user_data):
-        """Update node user information"""
-        if not node_id or node_id in ['^all', '^local']:
-            return
-            
-        # For now, just ensure the node exists in our tracking
-        if node_id not in self.node_status:
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': None,
-                'position_lat': None,
-                'position_lon': None,
-                'rssi': None,
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-    
-    def on_connection(self, interface, topic=None):
-        """Handle connection established"""
-        self.logger.info("Meshtastic connection established")
-    
-    def on_node_updated(self, node):
-        """Handle node updates"""
+    async def list_agents(self, request):
+        """List all registered agents"""
         try:
-            node_id = node.get('user', {}).get('id', '')
-            if not node_id:
-                return
-                
-            status = {
-                'node_id': node_id,
-                'last_seen': datetime.now(timezone.utc).isoformat(),
-                'battery_level': node.get('deviceMetrics', {}).get('batteryLevel', None),
-                'position_lat': node.get('position', {}).get('latitude', None),
-                'position_lon': node.get('position', {}).get('longitude', None),
-                'rssi': None,  # Will be updated from packets
-                'snr': None,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            
-            self.node_status[node_id] = status
-            self.node_queue.put(status)
-            
-        except Exception as e:
-            self.logger.error(f"Error updating node status: {e}")
-    
-    def buffer_packet(self, packet_data):
-        """Store packet in local buffer - called from main thread"""
-        try:
-            conn = self.get_db_connection()
-            conn.execute('''
-                INSERT INTO packet_buffer (timestamp, packet_data)
-                VALUES (?, ?)
-            ''', (packet_data['timestamp'], json.dumps(packet_data)))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error buffering packet: {e}")
-    
-    def update_node_status(self, status):
-        """Update node status in local database - called from main thread"""
-        try:
-            conn = self.get_db_connection()
-            conn.execute('''
-                INSERT OR REPLACE INTO node_status 
-                (node_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                status['node_id'], status['last_seen'], status['battery_level'],
-                status['position_lat'], status['position_lon'], 
-                status['rssi'], status['snr'], status['updated_at']
-            ))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error updating node status: {e}")
-    
-    def process_queued_data(self):
-        """Process queued packets and node updates from main thread"""
-        # Process packets
-        while not self.packet_queue.empty():
-            try:
-                packet_data = self.packet_queue.get_nowait()
-                self.buffer_packet(packet_data)
-            except queue.Empty:
-                break
-            except Exception as e:
-                self.logger.error(f"Error processing queued packet: {e}")
-        
-        # Process node updates
-        while not self.node_queue.empty():
-            try:
-                status = self.node_queue.get_nowait()
-                self.update_node_status(status)
-            except queue.Empty:
-                break
-            except Exception as e:
-                self.logger.error(f"Error processing queued node status: {e}")
-    
-    async def register_with_server(self):
-        """Register this agent with the central server"""
-        try:
-            payload = {
-                'agent_id': self.agent_id,
-                'location': {
-                    'name': self.location_name,
-                    'coordinates': [self.location_lat, self.location_lon]
-                }
-            }
-            
-            headers = {
-                'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.server_url}/api/agent/register",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        self.logger.info(f"Successfully registered with server: {result.get('agent_id')}")
-                        return True
-                    else:
-                        self.logger.error(f"Failed to register with server: {response.status}")
-                        return False
-                        
-        except Exception as e:
-            self.logger.error(f"Error registering with server: {e}")
-            return False
-    
-    async def send_data_to_server(self):
-        """Send buffered data to central server"""
-        try:
-            # Get unsent packets
-            conn = self.get_db_connection()
-            cursor = conn.execute('''
-                SELECT id, packet_data FROM packet_buffer 
-                WHERE sent = 0 
-                ORDER BY timestamp 
-                LIMIT 100
+            cursor = await self.db.execute('''
+                SELECT agent_id, location_name, location_lat, location_lon, 
+                       last_seen, packet_count, status
+                FROM agents
+                ORDER BY last_seen DESC
             ''')
-            packets = cursor.fetchall()
+            agents = await cursor.fetchall()
             
-            if not packets:
-                conn.close()
-                return
+            result = []
+            for agent in agents:
+                result.append({
+                    'agent_id': agent[0],
+                    'location_name': agent[1],
+                    'coordinates': [agent[2], agent[3]],
+                    'last_seen': agent[4],
+                    'packet_count': agent[5],
+                    'status': agent[6]
+                })
             
-            # Get current node status
-            cursor = conn.execute('SELECT * FROM node_status')
-            nodes = cursor.fetchall()
-            conn.close()
+            return web.json_response({'agents': result})
             
-            # Prepare payload
-            payload = {
-                'agent_id': self.agent_id,
-                'location': {
-                    'name': self.location_name,
-                    'coordinates': [self.location_lat, self.location_lon]
-                },
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'packets': [json.loads(p[1]) for p in packets],
-                'node_status': [
+        except Exception as e:
+            self.logger.error(f"Error listing agents: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def agent_status(self, request):
+        """Get detailed status for a specific agent"""
+        try:
+            agent_id = request.match_info['agent_id']
+            
+            # Get agent info
+            cursor = await self.db.execute('''
+                SELECT * FROM agents WHERE agent_id = ?
+            ''', (agent_id,))
+            agent = await cursor.fetchone()
+            
+            if not agent:
+                return web.json_response({'error': 'Agent not found'}, status=404)
+            
+            # Get recent health metrics
+            cursor = await self.db.execute('''
+                SELECT * FROM agent_health 
+                WHERE agent_id = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 10
+            ''', (agent_id,))
+            health = await cursor.fetchall()
+            
+            # Get active nodes
+            cursor = await self.db.execute('''
+                SELECT COUNT(*) FROM nodes 
+                WHERE agent_id = ? AND datetime(updated_at) > datetime('now', '-1 hour')
+            ''', (agent_id,))
+            active_nodes = await cursor.fetchone()
+            
+            result = {
+                'agent_id': agent[0],
+                'location_name': agent[1],
+                'coordinates': [agent[2], agent[3]],
+                'last_seen': agent[4],
+                'packet_count': agent[5],
+                'status': agent[6],
+                'active_nodes': active_nodes[0] if active_nodes else 0,
+                'recent_health': [
                     {
-                        'node_id': n[0],
-                        'last_seen': n[1],
-                        'battery_level': n[2],
-                        'position': [n[3], n[4]] if n[3] and n[4] else None,
-                        'rssi': n[5],
-                        'snr': n[6]
-                    } for n in nodes
+                        'timestamp': h[2],
+                        'packets_received': h[3],
+                        'nodes_active': h[4],
+                        'connection_status': h[5]
+                    } for h in health
                 ]
             }
             
-            # Send to server
-            headers = {
-                'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
+            return web.json_response(result)
+            
+        except Exception as e:
+            self.logger.error(f"Error getting agent status: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def debug_agents(self, request):
+        """Debug endpoint to check agents in database"""
+        try:
+            cursor = await self.db.execute('SELECT * FROM agents')
+            agents = await cursor.fetchall()
+            
+            self.logger.info(f"Debug: Found {len(agents)} agents in database")
+            for agent in agents:
+                self.logger.info(f"Debug: Agent {agent}")
+            
+            return web.json_response({
+                'count': len(agents),
+                'agents': [
+                    {
+                        'agent_id': a[0],
+                        'location_name': a[1], 
+                        'location_lat': a[2],
+                        'location_lon': a[3],
+                        'last_seen': a[4],
+                        'packet_count': a[5],
+                        'status': a[6]
+                    } for a in agents
+                ]
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error in debug endpoint: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def debug_nodes(self, request):
+        """Debug endpoint to check nodes in database"""
+        try:
+            cursor = await self.db.execute('SELECT * FROM nodes')
+            nodes = await cursor.fetchall()
+            
+            self.logger.info(f"Debug: Found {len(nodes)} nodes in database")
+            for node in nodes:
+                self.logger.info(f"Debug: Node {node}")
+            
+            return web.json_response({
+                'count': len(nodes),
+                'nodes': [
+                    {
+                        'node_id': n[0],
+                        'agent_id': n[1],
+                        'last_seen': n[2],
+                        'battery_level': n[3],
+                        'position_lat': n[4],
+                        'position_lon': n[5],
+                        'rssi': n[6],
+                        'snr': n[7],
+                        'updated_at': n[8]
+                    } for n in nodes
+                ]
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error in debug nodes endpoint: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def debug_packets(self, request):
+        """Debug endpoint to check recent packets"""
+        try:
+            cursor = await self.db.execute('''
+                SELECT * FROM packets 
+                ORDER BY timestamp DESC 
+                LIMIT 20
+            ''')
+            packets = await cursor.fetchall()
+            
+            self.logger.info(f"Debug: Found {len(packets)} recent packets in database")
+            
+            return web.json_response({
+                'count': len(packets),
+                'packets': [
+                    {
+                        'id': p[0],
+                        'agent_id': p[1],
+                        'timestamp': p[2],
+                        'from_node': p[3],
+                        'to_node': p[4],
+                        'type': p[7],
+                        'rssi': p[9],
+                        'snr': p[10]
+                    } for p in packets
+                ]
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error in debug packets endpoint: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_packets(self, request):
+        """Get recent packets with filtering options"""
+        try:
+            # Parse query parameters
+            limit = int(request.query.get('limit', 100))
+            agent_id = request.query.get('agent_id')
+            packet_type = request.query.get('type')
+            hours = int(request.query.get('hours', 24))
+            
+            # Build query
+            query = '''
+                SELECT p.*, a.location_name
+                FROM packets p
+                JOIN agents a ON p.agent_id = a.agent_id
+                WHERE datetime(p.timestamp) > datetime('now', '-{} hours')
+            '''.format(hours)
+            params = []
+            
+            if agent_id and agent_id != 'all':
+                query += ' AND p.agent_id = ?'
+                params.append(agent_id)
+            
+            if packet_type:
+                query += ' AND p.type = ?'
+                params.append(packet_type)
+            
+            query += ' ORDER BY p.timestamp DESC LIMIT ?'
+            params.append(limit)
+            
+            cursor = await self.db.execute(query, params)
+            packets = await cursor.fetchall()
+            
+            result = []
+            for packet in packets:
+                result.append({
+                    'id': packet[0],
+                    'agent_id': packet[1],
+                    'agent_location': packet[12],
+                    'timestamp': packet[2],
+                    'from_node': packet[3],
+                    'to_node': packet[4],
+                    'type': packet[7],
+                    'payload': json.loads(packet[8]) if packet[8] else None,
+                    'rssi': packet[9],
+                    'snr': packet[10]
+                })
+            
+            return web.json_response({'packets': result})
+            
+        except Exception as e:
+            self.logger.error(f"Error getting packets: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_nodes(self, request):
+        """Get node information across all agents"""
+        try:
+            agent_id = request.query.get('agent_id')
+            hours = int(request.query.get('hours', 24))
+            
+            # Build query
+            query = '''
+                SELECT n.node_id, n.agent_id, a.location_name, n.last_seen,
+                       n.battery_level, n.position_lat, n.position_lon,
+                       n.rssi, n.snr, n.updated_at
+                FROM nodes n
+                JOIN agents a ON n.agent_id = a.agent_id
+                WHERE datetime(n.updated_at) > datetime('now', '-{} hours')
+            '''.format(hours)
+            params = []
+            
+            if agent_id and agent_id != 'all':
+                query += ' AND n.agent_id = ?'
+                params.append(agent_id)
+            
+            query += ' ORDER BY n.updated_at DESC'
+            
+            cursor = await self.db.execute(query, params)
+            nodes = await cursor.fetchall()
+            
+            result = []
+            for node in nodes:
+                result.append({
+                    'node_id': node[0],
+                    'agent_id': node[1],
+                    'agent_location': node[2],
+                    'last_seen': node[3],
+                    'battery_level': node[4],
+                    'position': [node[5], node[6]] if node[5] and node[6] else None,
+                    'rssi': node[7],
+                    'snr': node[8],
+                    'updated_at': node[9]
+                })
+            
+            return web.json_response({'nodes': result})
+            
+        except Exception as e:
+            self.logger.error(f"Error getting nodes: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_stats(self, request):
+        """Get overall system statistics"""
+        try:
+            # Total agents
+            cursor = await self.db.execute('SELECT COUNT(*) FROM agents')
+            total_agents = (await cursor.fetchone())[0]
+            
+            # Active agents (seen in last hour)
+            cursor = await self.db.execute('''
+                SELECT COUNT(*) FROM agents 
+                WHERE datetime(last_seen) > datetime('now', '-1 hour')
+            ''')
+            active_agents = (await cursor.fetchone())[0]
+            
+            # Total packets
+            cursor = await self.db.execute('SELECT COUNT(*) FROM packets')
+            total_packets = (await cursor.fetchone())[0]
+            
+            # Packets in last hour
+            cursor = await self.db.execute('''
+                SELECT COUNT(*) FROM packets 
+                WHERE datetime(timestamp) > datetime('now', '-1 hour')
+            ''')
+            recent_packets = (await cursor.fetchone())[0]
+            
+            # Total unique nodes
+            cursor = await self.db.execute('SELECT COUNT(DISTINCT node_id) FROM nodes')
+            total_nodes = (await cursor.fetchone())[0]
+            
+            # Active nodes (seen in last hour)
+            cursor = await self.db.execute('''
+                SELECT COUNT(DISTINCT node_id) FROM nodes 
+                WHERE datetime(updated_at) > datetime('now', '-1 hour')
+            ''')
+            active_nodes = (await cursor.fetchone())[0]
+            
+            # Packet types breakdown
+            cursor = await self.db.execute('''
+                SELECT type, COUNT(*) 
+                FROM packets 
+                WHERE datetime(timestamp) > datetime('now', '-24 hours')
+                GROUP BY type
+                ORDER BY COUNT(*) DESC
+            ''')
+            packet_types = await cursor.fetchall()
+            
+            result = {
+                'agents': {
+                    'total': total_agents,
+                    'active': active_agents
+                },
+                'packets': {
+                    'total': total_packets,
+                    'recent_hour': recent_packets
+                },
+                'nodes': {
+                    'total': total_nodes,
+                    'active': active_nodes
+                },
+                'packet_types': [
+                    {'type': pt[0], 'count': pt[1]} 
+                    for pt in packet_types
+                ]
             }
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.server_url}/api/agent/data",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        # Mark packets as sent
-                        conn = self.get_db_connection()
-                        packet_ids = [p[0] for p in packets]
-                        placeholders = ','.join('?' * len(packet_ids))
-                        conn.execute(f'''
-                            UPDATE packet_buffer 
-                            SET sent = 1 
-                            WHERE id IN ({placeholders})
-                        ''', packet_ids)
-                        conn.commit()
-                        conn.close()
-                        
-                        self.logger.info(f"Successfully sent {len(packets)} packets to server")
-                    else:
-                        self.logger.error(f"Server returned status {response.status}")
-                        
-        except Exception as e:
-            self.logger.error(f"Error sending data to server: {e}")
-    
-    async def cleanup_old_data(self):
-        """Clean up old buffered data"""
-        try:
-            # Remove sent packets older than 1 day
-            cutoff = datetime.now(timezone.utc).timestamp() - (24 * 60 * 60)
-            cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-            
-            conn = self.get_db_connection()
-            conn.execute('''
-                DELETE FROM packet_buffer 
-                WHERE sent = 1 AND timestamp < ?
-            ''', (cutoff_iso,))
-            conn.commit()
-            conn.close()
+            return web.json_response(result)
             
         except Exception as e:
-            self.logger.error(f"Error cleaning up old data: {e}")
+            self.logger.error(f"Error getting stats: {e}")
+            return web.json_response({'error': str(e)}, status=500)
     
-    async def run(self):
-        """Main agent loop"""
-        self.logger.info(f"Starting MeshyMcMapface Agent {self.agent_id}")
+    async def dashboard(self, request):
+        """Main dashboard page"""
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MeshyMcMapface Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
+        .stat-number { font-size: 2em; font-weight: bold; color: #2196F3; }
+        .stat-label { color: #666; margin-top: 5px; }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section h2 { margin-top: 0; color: #333; }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        .table th { background: #f8f9fa; }
+        .status-active { color: #4CAF50; font-weight: bold; }
+        .status-inactive { color: #f44336; }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>MeshyMcMapface Dashboard</h1>
+            <p>Real-time monitoring of distributed Meshtastic mesh networks</p>
+        </div>
         
-        # Connect to Meshtastic node
-        if not self.connect_to_node():
-            self.logger.error("Failed to connect to Meshtastic node, exiting")
-            return
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents">Agents</a>
+            <a href="/packets">Packets</a>
+            <a href="/nodes">Nodes</a>
+            <a href="/map">Map</a>
+        </div>
         
-        # Register with server
-        self.logger.info("Registering with server...")
-        if await self.register_with_server():
-            self.logger.info("Registration successful")
-        else:
-            self.logger.warning("Registration failed, but continuing anyway")
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="total-agents">-</div>
+                <div class="stat-label">Total Agents</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="active-agents">-</div>
+                <div class="stat-label">Active Agents</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="total-packets">-</div>
+                <div class="stat-label">Total Packets</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="recent-packets">-</div>
+                <div class="stat-label">Last Hour</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="total-nodes">-</div>
+                <div class="stat-label">Total Nodes</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="active-nodes">-</div>
+                <div class="stat-label">Active Nodes</div>
+            </div>
+        </div>
         
-        # Main loop
-        while self.running:
-            try:
-                # Process any queued data from callback threads
-                self.process_queued_data()
-                
-                # Send data to server
-                await self.send_data_to_server()
-                
-                # Clean up old data
-                await self.cleanup_old_data()
-                
-                # Wait for next interval
-                await asyncio.sleep(self.report_interval)
-                
-            except KeyboardInterrupt:
-                self.logger.info("Received interrupt, shutting down...")
-                self.running = False
-                break
-            except Exception as e:
-                self.logger.error(f"Error in main loop: {e}")
-                await asyncio.sleep(5)  # Brief pause before retry
+        <div class="section">
+            <h2>Recent Agents</h2>
+            <table class="table" id="agents-table">
+                <thead>
+                    <tr>
+                        <th>Agent ID</th>
+                        <th>Location</th>
+                        <th>Last Seen</th>
+                        <th>Packets</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
         
-        # Cleanup
-        if self.interface:
-            self.interface.close()
-        self.logger.info("MeshyMcMapface Agent stopped")
+        <div class="section">
+            <h2>Recent Packets</h2>
+            <table class="table" id="packets-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Agent</th>
+                        <th>From</th>
+                        <th>Type</th>
+                        <th>RSSI</th>
+                        <th>SNR</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                document.getElementById('total-agents').textContent = data.agents.total;
+                document.getElementById('active-agents').textContent = data.agents.active;
+                document.getElementById('total-packets').textContent = data.packets.total;
+                document.getElementById('recent-packets').textContent = data.packets.recent_hour;
+                document.getElementById('total-nodes').textContent = data.nodes.total;
+                document.getElementById('active-nodes').textContent = data.nodes.active;
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        async function loadAgents() {
+            try {
+                console.log('Loading agents for dashboard...');
+                const response = await fetch('/api/agents');
+                console.log('Dashboard agents response:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch agents for dashboard:', response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('Dashboard agents data:', data);
+                
+                const tbody = document.querySelector('#agents-table tbody');
+                tbody.innerHTML = '';
+                
+                if (!data.agents || data.agents.length === 0) {
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="5" style="text-align: center;">No agents registered</td>';
+                    return;
+                }
+                
+                data.agents.slice(0, 10).forEach(agent => {
+                    const row = tbody.insertRow();
+                    const lastSeen = new Date(agent.last_seen).toLocaleString();
+                    const isActive = new Date() - new Date(agent.last_seen) < 60 * 60 * 1000;
+                    
+                    row.innerHTML = `
+                        <td>${agent.agent_id}</td>
+                        <td>${agent.location_name}</td>
+                        <td>${lastSeen}</td>
+                        <td>${agent.packet_count}</td>
+                        <td class="${isActive ? 'status-active' : 'status-inactive'}">
+                            ${isActive ? 'Active' : 'Inactive'}
+                        </td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading agents for dashboard:', error);
+            }
+        }
+        
+        async function loadRecentPackets() {
+            try {
+                const response = await fetch('/api/packets?limit=20');
+                const data = await response.json();
+                
+                const tbody = document.querySelector('#packets-table tbody');
+                tbody.innerHTML = '';
+                
+                data.packets.forEach(packet => {
+                    const row = tbody.insertRow();
+                    const timestamp = new Date(packet.timestamp).toLocaleString();
+                    
+                    row.innerHTML = `
+                        <td>${timestamp}</td>
+                        <td>${packet.agent_location}</td>
+                        <td>${packet.from_node}</td>
+                        <td>${packet.type}</td>
+                        <td>${packet.rssi || '-'}</td>
+                        <td>${packet.snr || '-'}</td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading packets:', error);
+            }
+        }
+        
+        // Initial load
+        loadStats();
+        loadAgents();
+        loadRecentPackets();
+        
+        // Refresh every 30 seconds
+        setInterval(() => {
+            loadStats();
+            loadAgents();
+            loadRecentPackets();
+        }, 30000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
+    
+    async def agents_page(self, request):
+        """Agents management page"""
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Agents - MeshyMcMapface</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .table th { background: #f8f9fa; }
+        .status-active { color: #4CAF50; font-weight: bold; }
+        .status-inactive { color: #f44336; }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+        .nav a.active { background: #2196F3; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Agent Management</h1>
+            <p>Monitor and manage distributed mesh agents</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents" class="active">Agents</a>
+            <a href="/packets">Packets</a>
+            <a href="/nodes">Nodes</a>
+            <a href="/map">Map</a>
+        </div>
+        
+        <div class="section">
+            <h2>All Agents</h2>
+            <table class="table" id="agents-table">
+                <thead>
+                    <tr>
+                        <th>Agent ID</th>
+                        <th>Location</th>
+                        <th>Coordinates</th>
+                        <th>Last Seen</th>
+                        <th>Total Packets</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        async function loadAllAgents() {
+            try {
+                console.log('Loading agents...');
+                const response = await fetch('/api/agents');
+                console.log('Response status:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch agents:', response.status, response.statusText);
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('Agents data:', data);
+                
+                const tbody = document.querySelector('#agents-table tbody');
+                tbody.innerHTML = '';
+                
+                if (!data.agents || data.agents.length === 0) {
+                    console.log('No agents found');
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="6" style="text-align: center;">No agents registered</td>';
+                    return;
+                }
+                
+                data.agents.forEach(agent => {
+                    const row = tbody.insertRow();
+                    const lastSeen = new Date(agent.last_seen).toLocaleString();
+                    const isActive = new Date() - new Date(agent.last_seen) < 60 * 60 * 1000;
+                    const coords = `${agent.coordinates[0].toFixed(4)}, ${agent.coordinates[1].toFixed(4)}`;
+                    
+                    row.innerHTML = `
+                        <td>${agent.agent_id}</td>
+                        <td>${agent.location_name}</td>
+                        <td>${coords}</td>
+                        <td>${lastSeen}</td>
+                        <td>${agent.packet_count}</td>
+                        <td class="${isActive ? 'status-active' : 'status-inactive'}">
+                            ${isActive ? 'Active' : 'Inactive'}
+                        </td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading agents:', error);
+            }
+        }
+        
+        // Initial load
+        loadAllAgents();
+        
+        // Refresh every 30 seconds
+        setInterval(loadAllAgents, 30000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
+    
+    async def nodes_page(self, request):
+        """Nodes page with table view"""
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nodes - MeshyMcMapface</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .table { width: 100%; border-collapse: collapse; }
+        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .table th { background: #f8f9fa; }
+        .status-active { color: #4CAF50; font-weight: bold; }
+        .status-inactive { color: #f44336; }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+        .nav a.active { background: #2196F3; color: white; }
+        .battery-high { color: #4CAF50; }
+        .battery-medium { color: #FF9800; }
+        .battery-low { color: #f44336; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Network Nodes</h1>
+            <p>All mesh nodes detected across the network</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents">Agents</a>
+            <a href="/packets">Packets</a>
+            <a href="/nodes" class="active">Nodes</a>
+            <a href="/map">Map</a>
+        </div>
+        
+        <div class="section">
+            <h2>All Network Nodes</h2>
+            <table class="table" id="nodes-table">
+                <thead>
+                    <tr>
+                        <th>Node ID</th>
+                        <th>Agent</th>
+                        <th>Last Seen</th>
+                        <th>Battery</th>
+                        <th>Position</th>
+                        <th>Signal (RSSI)</th>
+                        <th>SNR</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        async function loadAllNodes() {
+            try {
+                console.log('Loading nodes...');
+                const response = await fetch('/api/nodes');
+                console.log('Nodes response status:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch nodes:', response.status, response.statusText);
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('Nodes data:', data);
+                
+                const tbody = document.querySelector('#nodes-table tbody');
+                tbody.innerHTML = '';
+                
+                if (!data.nodes || data.nodes.length === 0) {
+                    console.log('No nodes found');
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="8" style="text-align: center;">No nodes found</td>';
+                    return;
+                }
+                
+                data.nodes.forEach(node => {
+                    const row = tbody.insertRow();
+                    const lastSeen = new Date(node.updated_at).toLocaleString();
+                    const isActive = new Date() - new Date(node.updated_at) < 60 * 60 * 1000;
+                    
+                    // Format battery level with color coding
+                    let batteryDisplay = '-';
+                    let batteryClass = '';
+                    if (node.battery_level !== null) {
+                        batteryDisplay = `${node.battery_level}%`;
+                        if (node.battery_level > 50) batteryClass = 'battery-high';
+                        else if (node.battery_level > 20) batteryClass = 'battery-medium';
+                        else batteryClass = 'battery-low';
+                    }
+                    
+                    // Format position
+                    let positionDisplay = '-';
+                    if (node.position && node.position[0] && node.position[1]) {
+                        positionDisplay = `${node.position[0].toFixed(4)}, ${node.position[1].toFixed(4)}`;
+                    }
+                    
+                    row.innerHTML = `
+                        <td><strong>${node.node_id}</strong></td>
+                        <td>${node.agent_location}</td>
+                        <td>${lastSeen}</td>
+                        <td class="${batteryClass}">${batteryDisplay}</td>
+                        <td>${positionDisplay}</td>
+                        <td>${node.rssi ? node.rssi + ' dBm' : '-'}</td>
+                        <td>${node.snr ? node.snr + ' dB' : '-'}</td>
+                        <td class="${isActive ? 'status-active' : 'status-inactive'}">
+                            ${isActive ? 'Active' : 'Inactive'}
+                        </td>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading nodes:', error);
+            }
+        }
+        
+        // Initial load
+        loadAllNodes();
+        
+        // Refresh every 30 seconds
+        setInterval(loadAllNodes, 30000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
+    
+    async def packets_page(self, request):
+        """Packets page with filtering"""
+        return web.Response(text="Packets page - Coming soon!", content_type='text/html')
+    
+    async def map_page(self, request):
+        """Interactive map page showing nodes and agents"""
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Network Map - MeshyMcMapface</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+        .nav a.active { background: #2196F3; color: white; }
+        .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+        .control-group { display: flex; gap: 5px; align-items: center; }
+        .control-group label { font-weight: bold; }
+        .control-group select, .control-group input { padding: 5px; border: 1px solid #ddd; border-radius: 4px; }
+        #map { height: 600px; width: 100%; border-radius: 8px; }
+        .legend { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-top: 20px; }
+        .legend h3 { margin-top: 0; }
+        .legend-item { display: flex; align-items: center; margin: 10px 0; }
+        .legend-icon { width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+        .stats-bar { display: flex; gap: 20px; margin-bottom: 20px; }
+        .stat { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; min-width: 120px; }
+        .stat-number { font-size: 1.5em; font-weight: bold; color: #2196F3; }
+        .stat-label { color: #666; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>MeshyMcMapface Network Map</h1>
+            <p>Real-time visualization of mesh network nodes and agents</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents">Agents</a>
+            <a href="/packets">Packets</a>
+            <a href="/nodes">Nodes</a>
+            <a href="/map" class="active">Map</a>
+        </div>
+        
+        <div class="stats-bar">
+            <div class="stat">
+                <div class="stat-number" id="total-nodes">-</div>
+                <div class="stat-label">Total Nodes</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="active-nodes">-</div>
+                <div class="stat-label">Active Nodes</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="total-agents">-</div>
+                <div class="stat-label">Agents</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="coverage-area">-</div>
+                <div class="stat-label">Coverage (km²)</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="controls">
+                <div class="control-group">
+                    <label>Show:</label>
+                    <select id="filter-type">
+                        <option value="all">All Nodes</option>
+                        <option value="active">Active Only</option>
+                        <option value="agents">Agents Only</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Agent:</label>
+                    <select id="filter-agent">
+                        <option value="all">All Agents</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Time Range:</label>
+                    <select id="time-range">
+                        <option value="1">Last 1 Hour</option>
+                        <option value="6">Last 6 Hours</option>
+                        <option value="24" selected>Last 24 Hours</option>
+                        <option value="168">Last Week</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <input type="checkbox" id="show-connections" checked>
+                    <label for="show-connections">Show Connections</label>
+                </div>
+                <div class="control-group">
+                    <button onclick="refreshMap()" style="padding: 5px 15px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Refresh</button>
+                </div>
+            </div>
+            
+            <div id="map"></div>
+        </div>
+        
+        <div class="legend">
+            <h3>Map Legend</h3>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #4CAF50;"></div>
+                <span>Active Mesh Node (seen in last hour)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #FF9800;"></div>
+                <span>Inactive Mesh Node (older than 1 hour)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #2196F3; transform: scale(1.3);"></div>
+                <span>MeshyMcMapface Agent</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #f44336;"></div>
+                <span>Node with Low Battery (<20%)</span>
+            </div>
+            <div style="margin-top: 10px;">
+                <strong>Lines:</strong> Recent packet transmissions between nodes
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let map;
+        let markers = new Map();
+        let connections = [];
+        let nodeData = [];
+        let agentData = [];
+        
+        // Initialize map
+        function initMap() {
+            map = L.map('map').setView([39.8283, -98.5795], 4); // Center of US
+            
+            // Add tile layer
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+        }
+        
+        // Load and display data
+        async function loadMapData() {
+            try {
+                // Load nodes
+                const timeRange = document.getElementById('time-range').value;
+                const agentFilter = document.getElementById('filter-agent').value;
+                
+                let nodesUrl = `/api/nodes?hours=${timeRange}`;
+                if (agentFilter !== 'all') {
+                    nodesUrl += `&agent_id=${agentFilter}`;
+                }
+                
+                const nodesResponse = await fetch(nodesUrl);
+                const nodesData = await nodesResponse.json();
+                nodeData = nodesData.nodes || [];
+                
+                // Load agents
+                const agentsResponse = await fetch('/api/agents');
+                const agentsData = await agentsResponse.json();
+                agentData = agentsData.agents || [];
+                
+                // Load recent packets for connections
+                const packetsResponse = await fetch(`/api/packets?limit=500&hours=${timeRange}`);
+                const packetsData = await packetsResponse.json();
+                
+                displayNodes();
+                displayAgents();
+                displayConnections(packetsData.packets || []);
+                updateStats();
+                updateAgentFilter();
+                
+            } catch (error) {
+                console.error('Error loading map data:', error);
+            }
+        }
+        
+        function displayNodes() {
+            const filterType = document.getElementById('filter-type').value;
+            const now = new Date();
+            
+            // Clear existing node markers
+            markers.forEach((marker, key) => {
+                if (key.startsWith('node_')) {
+                    map.removeLayer(marker);
+                    markers.delete(key);
+                }
+            });
+            
+            nodeData.forEach(node => {
+                if (!node.position || node.position[0] === null || node.position[1] === null) return;
+                
+                const lastSeen = new Date(node.updated_at);
+                const hoursOld = (now - lastSeen) / (1000 * 60 * 60);
+                const isActive = hoursOld < 1;
+                
+                // Apply filter
+                if (filterType === 'active' && !isActive) return;
+                if (filterType === 'agents') return; // Skip nodes when showing agents only
+                
+                // Determine color based on status
+                let color = '#4CAF50'; // Active
+                if (!isActive) color = '#FF9800'; // Inactive
+                if (node.battery_level && node.battery_level < 20) color = '#f44336'; // Low battery
+                
+                // Create marker
+                const marker = L.circleMarker([node.position[0], node.position[1]], {
+                    radius: 8,
+                    fillColor: color,
+                    color: '#fff',
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.8
+                });
+                
+                // Create popup content
+                const popupContent = `
+                    <strong>Node: ${node.node_id}</strong><br>
+                    Agent: ${node.agent_location}<br>
+                    Last Seen: ${lastSeen.toLocaleString()}<br>
+                    ${node.battery_level ? `Battery: ${node.battery_level}%<br>` : ''}
+                    ${node.rssi ? `RSSI: ${node.rssi} dBm<br>` : ''}
+                    ${node.snr ? `SNR: ${node.snr} dB` : ''}
+                `;
+                
+                marker.bindPopup(popupContent);
+                marker.addTo(map);
+                markers.set(`node_${node.node_id}`, marker);
+            });
+        }
+        
+        function displayAgents() {
+            const filterType = document.getElementById('filter-type').value;
+            
+            // Clear existing agent markers
+            markers.forEach((marker, key) => {
+                if (key.startsWith('agent_')) {
+                    map.removeLayer(marker);
+                    markers.delete(key);
+                }
+            });
+            
+            if (filterType === 'nodes') return; // Skip agents when showing nodes only
+            
+            agentData.forEach(agent => {
+                if (!agent.coordinates || agent.coordinates.length !== 2) return;
+                
+                const lastSeen = new Date(agent.last_seen);
+                const isActive = (new Date() - lastSeen) < (60 * 60 * 1000); // 1 hour
+                
+                // Create agent marker (larger, different style)
+                const marker = L.circleMarker([agent.coordinates[0], agent.coordinates[1]], {
+                    radius: 12,
+                    fillColor: '#2196F3',
+                    color: '#fff',
+                    weight: 3,
+                    opacity: 1,
+                    fillOpacity: 0.9
+                });
+                
+                const popupContent = `
+                    <strong>🏢 Agent: ${agent.agent_id}</strong><br>
+                    Location: ${agent.location_name}<br>
+                    Last Seen: ${lastSeen.toLocaleString()}<br>
+                    Status: ${isActive ? '✅ Active' : '❌ Inactive'}<br>
+                    Total Packets: ${agent.packet_count}
+                `;
+                
+                marker.bindPopup(popupContent);
+                marker.addTo(map);
+                markers.set(`agent_${agent.agent_id}`, marker);
+            });
+        }
+        
+        function displayConnections(packets) {
+            const showConnections = document.getElementById('show-connections').checked;
+            
+            // Clear existing connections
+            connections.forEach(line => map.removeLayer(line));
+            connections = [];
+            
+            if (!showConnections) return;
+            
+            // Create connections from recent packets
+            const connectionMap = new Map();
+            
+            packets.forEach(packet => {
+                if (packet.type === 'text_message' && packet.from_node && packet.to_node !== '^all') {
+                    const key = `${packet.from_node}-${packet.to_node}`;
+                    if (!connectionMap.has(key)) {
+                        connectionMap.set(key, { count: 0, latest: packet.timestamp });
+                    }
+                    connectionMap.get(key).count++;
+                    if (packet.timestamp > connectionMap.get(key).latest) {
+                        connectionMap.get(key).latest = packet.timestamp;
+                    }
+                }
+            });
+            
+            connectionMap.forEach((data, key) => {
+                const [fromNode, toNode] = key.split('-');
+                const fromMarker = markers.get(`node_${fromNode}`);
+                const toMarker = markers.get(`node_${toNode}`);
+                
+                if (fromMarker && toMarker) {
+                    const line = L.polyline([
+                        fromMarker.getLatLng(),
+                        toMarker.getLatLng()
+                    ], {
+                        color: '#666',
+                        weight: Math.min(data.count, 5),
+                        opacity: 0.6
+                    });
+                    
+                    line.bindPopup(`
+                        <strong>Connection</strong><br>
+                        From: ${fromNode}<br>
+                        To: ${toNode}<br>
+                        Messages: ${data.count}<br>
+                        Latest: ${new Date(data.latest).toLocaleString()}
+                    `);
+                    
+                    line.addTo(map);
+                    connections.push(line);
+                }
+            });
+        }
+        
+        function updateStats() {
+            const now = new Date();
+            const activeNodes = nodeData.filter(node => {
+                const lastSeen = new Date(node.updated_at);
+                return (now - lastSeen) < (60 * 60 * 1000);
+            }).length;
+            
+            document.getElementById('total-nodes').textContent = nodeData.length;
+            document.getElementById('active-nodes').textContent = activeNodes;
+            document.getElementById('total-agents').textContent = agentData.length;
+            
+            // Calculate rough coverage area
+            const positions = [...nodeData, ...agentData].map(item => 
+                item.position || item.coordinates
+            ).filter(pos => pos && pos[0] && pos[1]);
+            
+            let area = 0;
+            if (positions.length > 2) {
+                const lats = positions.map(p => p[0]);
+                const lons = positions.map(p => p[1]);
+                const latRange = Math.max(...lats) - Math.min(...lats);
+                const lonRange = Math.max(...lons) - Math.min(...lons);
+                area = Math.round(latRange * lonRange * 111 * 111); // Rough km²
+            }
+            
+            document.getElementById('coverage-area').textContent = area > 0 ? area : '-';
+        }
+        
+        function updateAgentFilter() {
+            const select = document.getElementById('filter-agent');
+            const currentValue = select.value;
+            
+            // Clear existing options except "All Agents"
+            select.innerHTML = '<option value="all">All Agents</option>';
+            
+            // Add agent options
+            agentData.forEach(agent => {
+                const option = document.createElement('option');
+                option.value = agent.agent_id;
+                option.textContent = `${agent.agent_id} (${agent.location_name})`;
+                select.appendChild(option);
+            });
+            
+            // Restore previous selection
+            select.value = currentValue;
+        }
+        
+        function refreshMap() {
+            loadMapData();
+        }
+        
+        // Auto-fit map to show all markers
+        function fitMapToMarkers() {
+            if (markers.size > 0) {
+                const group = new L.featureGroup([...markers.values()]);
+                map.fitBounds(group.getBounds().pad(0.1));
+            }
+        }
+        
+        // Event listeners
+        document.getElementById('filter-type').addEventListener('change', () => {
+            displayNodes();
+            displayAgents();
+        });
+        
+        document.getElementById('filter-agent').addEventListener('change', refreshMap);
+        document.getElementById('time-range').addEventListener('change', refreshMap);
+        document.getElementById('show-connections').addEventListener('change', () => {
+            displayConnections([]); // Will reload connections based on current data
+        });
+        
+        // Initialize
+        initMap();
+        loadMapData();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadMapData, 30000);
+        
+        // Fit map after initial load
+        setTimeout(fitMapToMarkers, 2000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
+    
+    async def start_server(self):
+        """Start the web server"""
+        await self.setup_database()
+        
+        runner = web.AppRunner(self.app)
+        await runner.setup()
+        
+        site = web.TCPSite(runner, self.bind_host, self.bind_port)
+        await site.start()
+        
+        self.logger.info(f"Server started at http://{self.bind_host}:{self.bind_port}")
+        return site
 
 def create_sample_config():
-    """Create sample configuration file"""
+    """Create sample server configuration"""
     config = configparser.ConfigParser()
     
-    config['agent'] = {
-        'id': 'agent_001',
-        'location_name': 'Test Location',
-        'location_lat': '37.7749',
-        'location_lon': '-122.4194'
-    }
-    
     config['server'] = {
-        'url': 'http://localhost:8082',
-        'api_key': 'your-api-key-here',
-        'report_interval': '30'
+        'host': 'localhost',
+        'port': '8082'
     }
     
-    config['meshtastic'] = {
-        'connection_type': 'auto',
-        '# device_path': '/dev/ttyUSB0',
-        '# tcp_host': '192.168.1.100',
-        '# ble_address': 'AA:BB:CC:DD:EE:FF'
+    config['database'] = {
+        'path': 'distributed_meshview.db'
     }
     
-    with open('agent_config.ini', 'w') as f:
+    config['api_keys'] = {
+        'agent_001': secrets.token_hex(16),
+        'agent_002': secrets.token_hex(16)
+    }
+    
+    with open('server_config.ini', 'w') as f:
         config.write(f)
     
-    print("Created sample config file: agent_config.ini")
-    print("Please edit the configuration before running the agent.")
+    print("Created sample server config: server_config.ini")
+    print("\nAPI Keys generated:")
+    for agent, key in config.items('api_keys'):
+        print(f"  {agent}: {key}")
+    print("\nUpdate your agent configurations with these API keys.")
 
-def main():
-    parser = argparse.ArgumentParser(description='MeshyMcMapface Agent MVP')
-    parser.add_argument('--config', default='agent_config.ini', 
+async def main():
+    parser = argparse.ArgumentParser(description='MeshyMcMapface Server MVP')
+    parser.add_argument('--config', default='server_config.ini',
                        help='Configuration file path')
     parser.add_argument('--create-config', action='store_true',
                        help='Create sample configuration file')
@@ -707,12 +1545,17 @@ def main():
         print("Use --create-config to generate a sample configuration.")
         return
     
-    agent = MeshyMcMapfaceAgent(args.config)
+    server = DistributedMeshyMcMapfaceServer(args.config)
     
     try:
-        asyncio.run(agent.run())
+        await server.start_server()
+        
+        # Keep server running
+        while True:
+            await asyncio.sleep(3600)  # Sleep for 1 hour
+            
     except KeyboardInterrupt:
-        print("Agent stopped by user")
+        print("Server stopped by user")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

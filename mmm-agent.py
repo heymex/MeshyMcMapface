@@ -179,6 +179,9 @@ class MeshyMcMapfaceAgent:
     def on_receive(self, packet, interface):
         """Handle received packets"""
         try:
+            # Debug: Log all received packets
+            self.logger.info(f"Received packet: {packet}")
+            
             # Convert packet to JSON-serializable format
             packet_data = {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
@@ -192,6 +195,13 @@ class MeshyMcMapfaceAgent:
                 'snr': packet.get('snr', None)
             }
             
+            self.logger.info(f"Parsed packet data: from={packet_data['from_node']}, to={packet_data['to_node']}, type={packet.get('decoded', {}).get('portnum', 'unknown')}")
+            
+            # Update node information from any packet (not just node updates)
+            if packet_data['from_node']:
+                self.logger.info(f"Updating node info for: {packet_data['from_node']}")
+                self.update_node_from_packet(packet_data['from_node'], packet_data)
+            
             # Handle different payload types
             if 'decoded' in packet:
                 decoded = packet['decoded']
@@ -200,17 +210,25 @@ class MeshyMcMapfaceAgent:
                 if 'text' in decoded:
                     packet_data['type'] = 'text_message'
                     packet_data['payload'] = decoded['text']
+                    self.logger.info(f"Text message from {packet_data['from_node']}: {decoded['text']}")
                     
                 elif 'position' in decoded:
                     packet_data['type'] = 'position'
                     pos = decoded['position']
                     # Convert protobuf position to dict
-                    packet_data['payload'] = {
+                    position_data = {
                         'latitude': getattr(pos, 'latitude', 0) if hasattr(pos, 'latitude') else pos.get('latitude', 0),
                         'longitude': getattr(pos, 'longitude', 0) if hasattr(pos, 'longitude') else pos.get('longitude', 0),
                         'altitude': getattr(pos, 'altitude', 0) if hasattr(pos, 'altitude') else pos.get('altitude', 0),
                         'time': getattr(pos, 'time', 0) if hasattr(pos, 'time') else pos.get('time', 0)
                     }
+                    packet_data['payload'] = position_data
+                    
+                    self.logger.info(f"Position from {packet_data['from_node']}: lat={position_data['latitude']}, lon={position_data['longitude']}")
+                    
+                    # Update node position from position packet
+                    if packet_data['from_node'] and position_data['latitude'] and position_data['longitude']:
+                        self.update_node_position(packet_data['from_node'], position_data)
                     
                 elif 'telemetry' in decoded:
                     packet_data['type'] = 'telemetry'
@@ -222,12 +240,19 @@ class MeshyMcMapfaceAgent:
                     if hasattr(tel, 'device_metrics') or 'device_metrics' in tel:
                         device_metrics = getattr(tel, 'device_metrics', None) or tel.get('device_metrics')
                         if device_metrics:
+                            battery_level = getattr(device_metrics, 'battery_level', None) if hasattr(device_metrics, 'battery_level') else device_metrics.get('battery_level')
                             telemetry_data['device_metrics'] = {
-                                'battery_level': getattr(device_metrics, 'battery_level', None) if hasattr(device_metrics, 'battery_level') else device_metrics.get('battery_level'),
+                                'battery_level': battery_level,
                                 'voltage': getattr(device_metrics, 'voltage', None) if hasattr(device_metrics, 'voltage') else device_metrics.get('voltage'),
                                 'channel_utilization': getattr(device_metrics, 'channel_utilization', None) if hasattr(device_metrics, 'channel_utilization') else device_metrics.get('channel_utilization'),
                                 'air_util_tx': getattr(device_metrics, 'air_util_tx', None) if hasattr(device_metrics, 'air_util_tx') else device_metrics.get('air_util_tx')
                             }
+                            
+                            self.logger.info(f"Telemetry from {packet_data['from_node']}: battery={battery_level}%")
+                            
+                            # Update node battery level from telemetry
+                            if packet_data['from_node'] and battery_level is not None:
+                                self.update_node_battery(packet_data['from_node'], battery_level)
                     
                     # Handle environment metrics
                     if hasattr(tel, 'environment_metrics') or 'environment_metrics' in tel:
@@ -245,20 +270,32 @@ class MeshyMcMapfaceAgent:
                     packet_data['type'] = 'user_info'
                     user = decoded['user']
                     # Convert protobuf user to dict
-                    packet_data['payload'] = {
+                    user_data = {
                         'id': getattr(user, 'id', '') if hasattr(user, 'id') else user.get('id', ''),
                         'long_name': getattr(user, 'long_name', '') if hasattr(user, 'long_name') else user.get('long_name', ''),
                         'short_name': getattr(user, 'short_name', '') if hasattr(user, 'short_name') else user.get('short_name', ''),
                         'hw_model': getattr(user, 'hw_model', 0) if hasattr(user, 'hw_model') else user.get('hw_model', 0)
                     }
+                    packet_data['payload'] = user_data
+                    
+                    self.logger.info(f"User info from {packet_data['from_node']}: {user_data['long_name']} ({user_data['short_name']})")
+                    
+                    # Update node user info
+                    if packet_data['from_node']:
+                        self.update_node_user_info(packet_data['from_node'], user_data)
                     
                 else:
                     packet_data['type'] = 'other'
+                    self.logger.info(f"Other packet from {packet_data['from_node']}: portnum={packet_data.get('port_num')}")
                     # Try to convert any protobuf objects to strings
                     try:
                         packet_data['payload'] = self._convert_protobuf_to_dict(decoded)
                     except:
                         packet_data['payload'] = self._safe_convert(decoded)
+            else:
+                packet_data['type'] = 'encrypted'
+                packet_data['payload'] = None
+                self.logger.info(f"Encrypted packet from {packet_data['from_node']}")
             
             # Buffer packet locally (thread-safe)
             self.packet_queue.put(packet_data)
@@ -267,7 +304,106 @@ class MeshyMcMapfaceAgent:
         except Exception as e:
             self.logger.error(f"Error processing packet: {e}")
             # Log the problematic packet for debugging
-            self.logger.debug(f"Problematic packet: {packet}")
+            self.logger.error(f"Problematic packet: {packet}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def update_node_from_packet(self, node_id, packet_data):
+        """Update node information from any packet"""
+        if not node_id or node_id in ['^all', '^local']:
+            return
+            
+        self.logger.info(f"Creating/updating node: {node_id}")
+        
+        status = {
+            'node_id': node_id,
+            'last_seen': packet_data['timestamp'],
+            'battery_level': None,
+            'position_lat': None,
+            'position_lon': None,
+            'rssi': packet_data.get('rssi'),
+            'snr': packet_data.get('snr'),
+            'updated_at': packet_data['timestamp']
+        }
+        
+        self.node_status[node_id] = status
+        self.node_queue.put(status)
+        self.logger.info(f"Node {node_id} queued for database update")
+    
+    def update_node_position(self, node_id, position_data):
+        """Update node position from position packet"""
+        if not node_id or node_id in ['^all', '^local']:
+            return
+            
+        self.logger.info(f"Updating position for node {node_id}: {position_data['latitude']}, {position_data['longitude']}")
+        
+        if node_id in self.node_status:
+            self.node_status[node_id]['position_lat'] = position_data['latitude']
+            self.node_status[node_id]['position_lon'] = position_data['longitude']
+            self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
+            self.node_queue.put(self.node_status[node_id])
+        else:
+            status = {
+                'node_id': node_id,
+                'last_seen': datetime.now(timezone.utc).isoformat(),
+                'battery_level': None,
+                'position_lat': position_data['latitude'],
+                'position_lon': position_data['longitude'],
+                'rssi': None,
+                'snr': None,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+            self.node_status[node_id] = status
+            self.node_queue.put(status)
+        
+        self.logger.info(f"Node {node_id} position queued for database update")
+    
+    def update_node_battery(self, node_id, battery_level):
+        """Update node battery level from telemetry"""
+        if not node_id or node_id in ['^all', '^local']:
+            return
+            
+        self.logger.info(f"Updating battery for node {node_id}: {battery_level}%")
+        
+        if node_id in self.node_status:
+            self.node_status[node_id]['battery_level'] = battery_level
+            self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
+            self.node_queue.put(self.node_status[node_id])
+        else:
+            status = {
+                'node_id': node_id,
+                'last_seen': datetime.now(timezone.utc).isoformat(),
+                'battery_level': battery_level,
+                'position_lat': None,
+                'position_lon': None,
+                'rssi': None,
+                'snr': None,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+            self.node_status[node_id] = status
+            self.node_queue.put(status)
+        
+        self.logger.info(f"Node {node_id} battery queued for database update")
+    
+    def update_node_user_info(self, node_id, user_data):
+        """Update node user information"""
+        if not node_id or node_id in ['^all', '^local']:
+            return
+            
+        # For now, just ensure the node exists in our tracking
+        if node_id not in self.node_status:
+            status = {
+                'node_id': node_id,
+                'last_seen': datetime.now(timezone.utc).isoformat(),
+                'battery_level': None,
+                'position_lat': None,
+                'position_lon': None,
+                'rssi': None,
+                'snr': None,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+            self.node_status[node_id] = status
+            self.node_queue.put(status)
     
     def on_connection(self, interface, topic=None):
         """Handle connection established"""
