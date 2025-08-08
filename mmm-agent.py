@@ -99,6 +99,35 @@ class MeshyMcMapfaceAgent:
         self.db_path = f"{self.agent_id}_buffer.db"
         # Note: We'll create connections in the specific threads that need them
     
+    def get_db_connection(self):
+        """Get a database connection for the current thread"""
+        conn = sqlite3.connect(self.db_path)
+        
+        # Create tables if they don't exist
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS packet_buffer (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                packet_data TEXT,
+                sent INTEGER DEFAULT 0
+            )
+        ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS node_status (
+                node_id TEXT PRIMARY KEY,
+                last_seen TEXT,
+                battery_level INTEGER,
+                position_lat REAL,
+                position_lon REAL,
+                rssi INTEGER,
+                snr REAL,
+                updated_at TEXT
+            )
+        ''')
+        conn.commit()
+        return conn
+    
     def connect_to_node(self):
         """Connect to Meshtastic node based on configuration"""
         try:
