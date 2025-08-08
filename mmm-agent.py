@@ -130,15 +130,17 @@ class MultiServerMeshyMcMapfaceAgent:
         ''')
         
         conn.execute('''
-            CREATE TABLE IF NOT EXISTS node_status (
-                node_id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS nodes (
+                node_id TEXT,
+                agent_id TEXT,
                 last_seen TEXT,
                 battery_level INTEGER,
                 position_lat REAL,
                 position_lon REAL,
                 rssi INTEGER,
                 snr REAL,
-                updated_at TEXT
+                updated_at TEXT,
+                PRIMARY KEY (node_id, agent_id)
             )
         ''')
         
