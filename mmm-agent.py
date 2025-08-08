@@ -1,4 +1,37 @@
-def get_db_connection(self):
+async def register_with_server(self):
+        """Register this agent with the central server"""
+        try:
+            payload = {
+                'agent_id': self.agent_id,
+                'location': {
+                    'name': self.location_name,
+                    'coordinates': [self.location_lat, self.location_lon]
+                }
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': self.api_key
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.server_url}/api/agent/register",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        self.logger.info(f"Successfully registered with server: {result.get('agent_id')}")
+                        return True
+                    else:
+                        self.logger.error(f"Failed to register with server: {response.status}")
+                        return False
+                        
+        except Exception as e:
+            self.logger.error(f"Error registering with server: {e}")
+            return False    def get_db_connection(self):
         """Get a database connection for the current thread"""
         conn = sqlite3.connect(self.db_path)
         
@@ -242,7 +275,7 @@ class MeshyMcMapfaceAgent:
                     try:
                         packet_data['payload'] = self._convert_protobuf_to_dict(decoded)
                     except:
-                        packet_data['payload'] = str(decoded)
+                        packet_data['payload'] = self._safe_convert(decoded)
             
             # Buffer packet locally (thread-safe)
             self.packet_queue.put(packet_data)
@@ -262,9 +295,9 @@ class MeshyMcMapfaceAgent:
                 if hasattr(value, 'ListFields'):
                     result[field.name] = self._convert_protobuf_to_dict(value)
                 elif isinstance(value, (list, tuple)):
-                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else item for item in value]
+                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
                 else:
-                    result[field.name] = value
+                    result[field.name] = self._safe_convert(value)
             return result
         elif isinstance(obj, dict):
             # Already a dict, process recursively
@@ -273,12 +306,28 @@ class MeshyMcMapfaceAgent:
                 if hasattr(value, 'ListFields'):
                     result[key] = self._convert_protobuf_to_dict(value)
                 elif isinstance(value, (list, tuple)):
-                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else item for item in value]
+                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else self._safe_convert(item) for item in value]
                 else:
-                    result[key] = value
+                    result[key] = self._safe_convert(value)
             return result
         else:
-            return obj
+            return self._safe_convert(obj)
+    
+    def _safe_convert(self, value):
+        """Safely convert values to JSON-serializable types"""
+        if isinstance(value, bytes):
+            # Convert bytes to base64 string
+            import base64
+            return base64.b64encode(value).decode('ascii')
+        elif hasattr(value, '__dict__'):
+            # Convert objects with __dict__ to dict
+            return {k: self._safe_convert(v) for k, v in value.__dict__.items()}
+        elif isinstance(value, (list, tuple)):
+            return [self._safe_convert(item) for item in value]
+        elif isinstance(value, dict):
+            return {k: self._safe_convert(v) for k, v in value.items()}
+        else:
+            return value
     
     def on_connection(self, interface, topic=None):
         """Handle connection established"""
@@ -463,6 +512,13 @@ class MeshyMcMapfaceAgent:
         if not self.connect_to_node():
             self.logger.error("Failed to connect to Meshtastic node, exiting")
             return
+        
+        # Register with server
+        self.logger.info("Registering with server...")
+        if await self.register_with_server():
+            self.logger.info("Registration successful")
+        else:
+            self.logger.warning("Registration failed, but continuing anyway")
         
         # Main loop
         while self.running:
