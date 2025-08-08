@@ -127,6 +127,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/packets', self.get_packets)
         self.app.router.add_get('/api/nodes', self.get_nodes)
         self.app.router.add_get('/api/stats', self.get_stats)
+        self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
         
         # Web UI routes
         self.app.router.add_get('/', self.dashboard)
@@ -145,7 +146,7 @@ class DistributedMeshyMcMapfaceServer:
     @web_middlewares.middleware
     async def auth_middleware(self, request, handler):
         """Authentication middleware for API endpoints"""
-        if request.path.startswith('/api/'):
+        if request.path.startswith('/api/') and not request.path.startswith('/api/debug/'):
             api_key = request.headers.get('X-API-Key')
             if not api_key or api_key not in self.api_keys.values():
                 return web.json_response({'error': 'Invalid API key'}, status=401)
@@ -164,14 +165,14 @@ class DistributedMeshyMcMapfaceServer:
             
             await self.db.execute('''
                 INSERT OR REPLACE INTO agents 
-                (agent_id, location_name, location_lat, location_lon, last_seen)
-                VALUES (?, ?, ?, ?, ?)
+                (agent_id, location_name, location_lat, location_lon, last_seen, status)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (agent_id, location_name, location_lat, location_lon, 
-                  datetime.now(timezone.utc).isoformat()))
+                  datetime.now(timezone.utc).isoformat(), 'active'))
             
             await self.db.commit()
             
-            self.logger.info(f"Registered agent: {agent_id}")
+            self.logger.info(f"Registered agent: {agent_id} at {location_name}")
             return web.json_response({'status': 'success', 'agent_id': agent_id})
             
         except Exception as e:
@@ -326,6 +327,35 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error getting agent status: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def debug_agents(self, request):
+        """Debug endpoint to check agents in database"""
+        try:
+            cursor = await self.db.execute('SELECT * FROM agents')
+            agents = await cursor.fetchall()
+            
+            self.logger.info(f"Debug: Found {len(agents)} agents in database")
+            for agent in agents:
+                self.logger.info(f"Debug: Agent {agent}")
+            
+            return web.json_response({
+                'count': len(agents),
+                'agents': [
+                    {
+                        'agent_id': a[0],
+                        'location_name': a[1], 
+                        'location_lat': a[2],
+                        'location_lon': a[3],
+                        'last_seen': a[4],
+                        'packet_count': a[5],
+                        'status': a[6]
+                    } for a in agents
+                ]
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error in debug endpoint: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def get_packets(self, request):
