@@ -146,7 +146,14 @@ class DistributedMeshyMcMapfaceServer:
     @web_middlewares.middleware
     async def auth_middleware(self, request, handler):
         """Authentication middleware for API endpoints"""
-        if request.path.startswith('/api/') and not request.path.startswith('/api/debug/'):
+        # Skip auth for debug endpoints and web UI API calls
+        if (request.path.startswith('/api/debug/') or 
+            request.path in ['/api/agents', '/api/packets', '/api/nodes', '/api/stats'] or
+            request.method == 'GET'):
+            return await handler(request)
+            
+        # Require auth for POST endpoints (agent data submission)
+        if request.path.startswith('/api/'):
             api_key = request.headers.get('X-API-Key')
             if not api_key or api_key not in self.api_keys.values():
                 return web.json_response({'error': 'Invalid API key'}, status=401)
@@ -649,11 +656,26 @@ class DistributedMeshyMcMapfaceServer:
         
         async function loadAgents() {
             try {
+                console.log('Loading agents for dashboard...');
                 const response = await fetch('/api/agents');
+                console.log('Dashboard agents response:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch agents for dashboard:', response.status);
+                    return;
+                }
+                
                 const data = await response.json();
+                console.log('Dashboard agents data:', data);
                 
                 const tbody = document.querySelector('#agents-table tbody');
                 tbody.innerHTML = '';
+                
+                if (!data.agents || data.agents.length === 0) {
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="5" style="text-align: center;">No agents registered</td>';
+                    return;
+                }
                 
                 data.agents.slice(0, 10).forEach(agent => {
                     const row = tbody.insertRow();
@@ -671,7 +693,7 @@ class DistributedMeshyMcMapfaceServer:
                     `;
                 });
             } catch (error) {
-                console.error('Error loading agents:', error);
+                console.error('Error loading agents for dashboard:', error);
             }
         }
         
@@ -778,11 +800,27 @@ class DistributedMeshyMcMapfaceServer:
     <script>
         async function loadAllAgents() {
             try {
+                console.log('Loading agents...');
                 const response = await fetch('/api/agents');
+                console.log('Response status:', response.status);
+                
+                if (!response.ok) {
+                    console.error('Failed to fetch agents:', response.status, response.statusText);
+                    return;
+                }
+                
                 const data = await response.json();
+                console.log('Agents data:', data);
                 
                 const tbody = document.querySelector('#agents-table tbody');
                 tbody.innerHTML = '';
+                
+                if (!data.agents || data.agents.length === 0) {
+                    console.log('No agents found');
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="6" style="text-align: center;">No agents registered</td>';
+                    return;
+                }
                 
                 data.agents.forEach(agent => {
                     const row = tbody.insertRow();
