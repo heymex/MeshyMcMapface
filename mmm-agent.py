@@ -150,24 +150,61 @@ class MeshyMcMapfaceAgent:
                 elif 'position' in decoded:
                     packet_data['type'] = 'position'
                     pos = decoded['position']
+                    # Convert protobuf position to dict
                     packet_data['payload'] = {
-                        'latitude': pos.get('latitude', 0),
-                        'longitude': pos.get('longitude', 0),
-                        'altitude': pos.get('altitude', 0),
-                        'time': pos.get('time', 0)
+                        'latitude': getattr(pos, 'latitude', 0) if hasattr(pos, 'latitude') else pos.get('latitude', 0),
+                        'longitude': getattr(pos, 'longitude', 0) if hasattr(pos, 'longitude') else pos.get('longitude', 0),
+                        'altitude': getattr(pos, 'altitude', 0) if hasattr(pos, 'altitude') else pos.get('altitude', 0),
+                        'time': getattr(pos, 'time', 0) if hasattr(pos, 'time') else pos.get('time', 0)
                     }
                     
                 elif 'telemetry' in decoded:
                     packet_data['type'] = 'telemetry'
-                    packet_data['payload'] = decoded['telemetry']
+                    tel = decoded['telemetry']
+                    # Convert protobuf telemetry to dict
+                    telemetry_data = {}
+                    
+                    # Handle device metrics
+                    if hasattr(tel, 'device_metrics') or 'device_metrics' in tel:
+                        device_metrics = getattr(tel, 'device_metrics', None) or tel.get('device_metrics')
+                        if device_metrics:
+                            telemetry_data['device_metrics'] = {
+                                'battery_level': getattr(device_metrics, 'battery_level', None) if hasattr(device_metrics, 'battery_level') else device_metrics.get('battery_level'),
+                                'voltage': getattr(device_metrics, 'voltage', None) if hasattr(device_metrics, 'voltage') else device_metrics.get('voltage'),
+                                'channel_utilization': getattr(device_metrics, 'channel_utilization', None) if hasattr(device_metrics, 'channel_utilization') else device_metrics.get('channel_utilization'),
+                                'air_util_tx': getattr(device_metrics, 'air_util_tx', None) if hasattr(device_metrics, 'air_util_tx') else device_metrics.get('air_util_tx')
+                            }
+                    
+                    # Handle environment metrics
+                    if hasattr(tel, 'environment_metrics') or 'environment_metrics' in tel:
+                        env_metrics = getattr(tel, 'environment_metrics', None) or tel.get('environment_metrics')
+                        if env_metrics:
+                            telemetry_data['environment_metrics'] = {
+                                'temperature': getattr(env_metrics, 'temperature', None) if hasattr(env_metrics, 'temperature') else env_metrics.get('temperature'),
+                                'relative_humidity': getattr(env_metrics, 'relative_humidity', None) if hasattr(env_metrics, 'relative_humidity') else env_metrics.get('relative_humidity'),
+                                'barometric_pressure': getattr(env_metrics, 'barometric_pressure', None) if hasattr(env_metrics, 'barometric_pressure') else env_metrics.get('barometric_pressure')
+                            }
+                    
+                    packet_data['payload'] = telemetry_data
                     
                 elif 'user' in decoded:
                     packet_data['type'] = 'user_info'
-                    packet_data['payload'] = decoded['user']
+                    user = decoded['user']
+                    # Convert protobuf user to dict
+                    packet_data['payload'] = {
+                        'id': getattr(user, 'id', '') if hasattr(user, 'id') else user.get('id', ''),
+                        'long_name': getattr(user, 'long_name', '') if hasattr(user, 'long_name') else user.get('long_name', ''),
+                        'short_name': getattr(user, 'short_name', '') if hasattr(user, 'short_name') else user.get('short_name', ''),
+                        'hw_model': getattr(user, 'hw_model', 0) if hasattr(user, 'hw_model') else user.get('hw_model', 0)
+                    }
                     
                 else:
                     packet_data['type'] = 'other'
-                    packet_data['payload'] = decoded
+                    # Try to convert any protobuf objects to strings
+                    try:
+                        packet_data['payload'] = self._convert_protobuf_to_dict(decoded)
+                    except:
+                        packet_data['payload'] = str(decoded)
             
             # Buffer packet locally
             self.buffer_packet(packet_data)
@@ -175,6 +212,35 @@ class MeshyMcMapfaceAgent:
             
         except Exception as e:
             self.logger.error(f"Error processing packet: {e}")
+            # Log the problematic packet for debugging
+            self.logger.debug(f"Problematic packet: {packet}")
+    
+    def _convert_protobuf_to_dict(self, obj):
+        """Convert protobuf objects to dictionaries recursively"""
+        if hasattr(obj, 'ListFields'):
+            # This is a protobuf message
+            result = {}
+            for field, value in obj.ListFields():
+                if hasattr(value, 'ListFields'):
+                    result[field.name] = self._convert_protobuf_to_dict(value)
+                elif isinstance(value, (list, tuple)):
+                    result[field.name] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else item for item in value]
+                else:
+                    result[field.name] = value
+            return result
+        elif isinstance(obj, dict):
+            # Already a dict, process recursively
+            result = {}
+            for key, value in obj.items():
+                if hasattr(value, 'ListFields'):
+                    result[key] = self._convert_protobuf_to_dict(value)
+                elif isinstance(value, (list, tuple)):
+                    result[key] = [self._convert_protobuf_to_dict(item) if hasattr(item, 'ListFields') else item for item in value]
+                else:
+                    result[key] = value
+            return result
+        else:
+            return obj
     
     def on_connection(self, interface, topic=None):
         """Handle connection established"""
