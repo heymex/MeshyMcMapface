@@ -134,8 +134,13 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/packets', self.packets_page)
         self.app.router.add_get('/nodes', self.nodes_page)
         
-        # Static files (CSS, JS)
-        self.app.router.add_static('/', path='static/', name='static')
+        # Static files (CSS, JS) - optional
+        try:
+            from pathlib import Path
+            if Path('static').exists():
+                self.app.router.add_static('/static/', path='static/', name='static')
+        except Exception as e:
+            self.logger.debug(f"Static files directory not found: {e}")
     
     @web_middlewares.middleware
     async def auth_middleware(self, request, handler):
