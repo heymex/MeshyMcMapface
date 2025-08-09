@@ -543,11 +543,11 @@ class MultiServerMeshyMcMapfaceAgent:
             
             conn = self.get_db_connection()
             conn.execute('''
-                INSERT OR REPLACE INTO node_status 
-                (node_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO nodes 
+                (node_id, agent_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                status['node_id'], status['last_seen'], status['battery_level'],
+                status['node_id'], self.agent_id, status['last_seen'], status['battery_level'],
                 status['position_lat'], status['position_lon'], 
                 status['rssi'], status['snr'], status['updated_at']
             ))
