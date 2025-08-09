@@ -315,16 +315,73 @@ class MultiServerMeshyMcMapfaceAgent:
             'updated_at': packet_data['timestamp']
         }
         
+        # FIXED: Extract GPS data from position packets
+        if packet_data['type'] == 'position' and packet_data.get('payload'):
+            payload = packet_data['payload']
+            if isinstance(payload, dict):
+                lat = payload.get('latitude')
+                lon = payload.get('longitude')
+                if lat and lon and lat != 0 and lon != 0:
+                    status['position_lat'] = lat
+                    status['position_lon'] = lon
+                    self.logger.info(f"GPS data extracted for {node_id}: lat={lat}, lon={lon}")
+        
+        # FIXED: Extract battery data from telemetry packets
+        if packet_data['type'] == 'telemetry' and packet_data.get('payload'):
+            payload = packet_data['payload']
+            if isinstance(payload, dict):
+                # Handle different telemetry formats
+                if 'device_metrics' in payload:
+                    battery = payload['device_metrics'].get('battery_level')
+                    if battery is not None:
+                        status['battery_level'] = battery
+                elif 'battery_level' in payload:
+                    status['battery_level'] = payload['battery_level']
+        
+        # Update in-memory status
+        if node_id in self.node_status:
+            # Merge with existing data to preserve GPS/battery info
+            existing = self.node_status[node_id]
+            if status['position_lat'] is None and existing.get('position_lat'):
+                status['position_lat'] = existing['position_lat']
+                status['position_lon'] = existing['position_lon']
+            if status['battery_level'] is None and existing.get('battery_level'):
+                status['battery_level'] = existing['battery_level']
+        
         self.node_status[node_id] = status
         self.node_queue.put(status)
     
     def update_node_position(self, node_id, position_data):
         """Update node position"""
-        if node_id in self.node_status:
-            self.node_status[node_id]['position_lat'] = position_data['latitude']
-            self.node_status[node_id]['position_lon'] = position_data['longitude']
+        if not node_id or node_id in ['^all', '^local']:
+            return
+            
+        # Create or update status
+        if node_id not in self.node_status:
+            self.node_status[node_id] = {
+                'node_id': node_id,
+                'last_seen': datetime.now(timezone.utc).isoformat(),
+                'battery_level': None,
+                'position_lat': None,
+                'position_lon': None,
+                'rssi': None,
+                'snr': None,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+        
+        # Update position
+        lat = position_data.get('latitude')
+        lon = position_data.get('longitude')
+        
+        if lat and lon and lat != 0 and lon != 0:
+            self.node_status[node_id]['position_lat'] = lat
+            self.node_status[node_id]['position_lon'] = lon
             self.node_status[node_id]['updated_at'] = datetime.now(timezone.utc).isoformat()
+            
+            self.logger.info(f"Updated position for {node_id}: lat={lat}, lon={lon}")
             self.node_queue.put(self.node_status[node_id])
+        else:
+            self.logger.warning(f"Invalid position data for {node_id}: lat={lat}, lon={lon}")
     
     def on_connection(self, interface, topic=None):
         """Handle connection established"""
@@ -417,7 +474,26 @@ class MultiServerMeshyMcMapfaceAgent:
             nodes = cursor.fetchall()
             conn.close()
             
+            # DEBUG: Log what we found in the database
+            self.logger.info(f"DEBUG: Found {len(nodes)} nodes in database for {self.agent_id}")
+            for node in nodes:
+                self.logger.info(f"DEBUG: Node {node[0]}: lat={node[3]}, lon={node[4]}, battery={node[2]}, last_seen={node[1]}")
+            
             # Prepare payload
+            node_status_list = []
+            for n in nodes:
+                node_status = {
+                    'node_id': n[0],           # node_id
+                    'last_seen': n[1],         # last_seen
+                    'battery_level': n[2],     # battery_level
+                    'position': [n[3], n[4]] if n[3] and n[4] else None,  # position_lat, position_lon
+                    'rssi': n[5],              # rssi
+                    'snr': n[6]                # snr
+                }
+                node_status_list.append(node_status)
+                # DEBUG: Log each node's status being sent
+                self.logger.info(f"DEBUG: Sending node {node_status['node_id']} with position {node_status['position']}")
+            
             payload = {
                 'agent_id': self.agent_id,
                 'location': {
@@ -426,17 +502,11 @@ class MultiServerMeshyMcMapfaceAgent:
                 },
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'packets': packets_to_send,
-                'node_status': [
-                    {
-                        'node_id': n[0],           # node_id
-                        'last_seen': n[1],         # last_seen
-                        'battery_level': n[2],     # battery_level
-                        'position': [n[3], n[4]] if n[3] and n[4] else None,  # position_lat, position_lon
-                        'rssi': n[5],              # rssi
-                        'snr': n[6]                # snr
-                    } for n in nodes
-                ]
+                'node_status': node_status_list
             }
+            
+            # DEBUG: Log the payload size and node count
+            self.logger.info(f"DEBUG: Sending payload with {len(packets_to_send)} packets and {len(node_status_list)} nodes to {server.name}")
             
             # Send to server
             headers = {
@@ -456,13 +526,16 @@ class MultiServerMeshyMcMapfaceAgent:
                         self.mark_packets_sent(packet_ids_to_update, server.name)
                         self.update_server_health(server.name, success=True)
                         
-                        self.logger.info(f"Successfully sent {len(packets_to_send)} packets to {server.name}")
+                        self.logger.info(f"Successfully sent {len(packets_to_send)} packets and {len(node_status_list)} nodes to {server.name}")
                     else:
-                        self.logger.error(f"Server {server.name} returned status {response.status}")
+                        response_text = await response.text()
+                        self.logger.error(f"Server {server.name} returned status {response.status}: {response_text}")
                         self.update_server_health(server.name, success=False)
                         
         except Exception as e:
             self.logger.error(f"Error sending data to {server.name}: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             self.update_server_health(server.name, success=False)
     
     def mark_packets_sent(self, packet_ids: List[int], server_name: str):
@@ -543,25 +616,42 @@ class MultiServerMeshyMcMapfaceAgent:
     def update_node_status(self, status):
         """Update node status in local database"""
         try:
-            self.logger.info(f"Writing node {status['node_id']} to database: lat={status['position_lat']}, lon={status['position_lon']}, battery={status['battery_level']}")
+            node_id = status['node_id']
+            lat = status.get('position_lat')
+            lon = status.get('position_lon')
+            
+            self.logger.info(f"Writing node {node_id} to database: lat={lat}, lon={lon}, battery={status.get('battery_level')}")
             
             conn = self.get_db_connection()
+            
+            # Use INSERT OR REPLACE to handle updates properly
             conn.execute('''
                 INSERT OR REPLACE INTO nodes 
                 (node_id, agent_id, last_seen, battery_level, position_lat, position_lon, rssi, snr, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                status['node_id'], self.agent_id, status['last_seen'], status['battery_level'],
-                status['position_lat'], status['position_lon'], 
-                status['rssi'], status['snr'], status['updated_at']
+                node_id, 
+                self.agent_id, 
+                status['last_seen'], 
+                status.get('battery_level'),
+                lat,
+                lon,
+                status.get('rssi'), 
+                status.get('snr'), 
+                status['updated_at']
             ))
+            
             conn.commit()
             conn.close()
             
-            self.logger.info(f"Successfully wrote node {status['node_id']} to database")
+            # Verify the write
+            if lat and lon:
+                self.logger.info(f"Successfully wrote GPS data for node {node_id}: {lat:.6f}, {lon:.6f}")
+            else:
+                self.logger.debug(f"Node {node_id} written without GPS data")
             
         except Exception as e:
-            self.logger.error(f"Error updating node status: {e}")
+            self.logger.error(f"Error updating node status for {node_id}: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
     
