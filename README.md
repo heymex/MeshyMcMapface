@@ -17,7 +17,7 @@ src/
 │   ├── config.py          # Configuration management
 │   ├── database.py        # Database abstraction layer
 │   └── exceptions.py      # Custom exceptions
-├── meshtastic/            # Meshtastic integration
+├── mesh_integration/      # Meshtastic integration
 │   ├── connections.py     # Connection handling
 │   ├── packet_parser.py   # Pluggable packet processors
 │   └── node_tracker.py    # Node status tracking

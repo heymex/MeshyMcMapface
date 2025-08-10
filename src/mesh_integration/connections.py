@@ -18,12 +18,17 @@ def _ensure_meshtastic_imports():
     if meshtastic is None:
         try:
             import meshtastic
-            import meshtastic.serial_interface
-            import meshtastic.tcp_interface
-            import meshtastic.ble_interface
-            from pubsub import pub
-        except ImportError:
-            raise MeshtasticConnectionError("Meshtastic library not installed. Run: pip install meshtastic")
+            from meshtastic import serial_interface
+            from meshtastic import tcp_interface  
+            from meshtastic import ble_interface
+            from pubsub import pub as _pub
+            
+            # Assign to global variables
+            globals()['meshtastic'] = meshtastic
+            globals()['pub'] = _pub
+            
+        except ImportError as e:
+            raise MeshtasticConnectionError(f"Meshtastic library import failed: {e}. Run: pip install meshtastic")
 
 
 class MeshtasticConnection:

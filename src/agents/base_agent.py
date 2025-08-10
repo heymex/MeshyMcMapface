@@ -9,9 +9,9 @@ from typing import Dict, Optional
 from ..core.config import ConfigManager, AgentConfig, MeshtasticConfig
 from ..core.database import DatabaseConnection
 from ..core.exceptions import MeshyMcMapfaceError, ConfigurationError
-from ..meshtastic.connections import ConnectionManager
-from ..meshtastic.packet_parser import PacketProcessor
-from ..meshtastic.node_tracker import NodeTracker
+from ..mesh_integration.connections import ConnectionManager
+from ..mesh_integration.packet_parser import PacketProcessor
+from ..mesh_integration.node_tracker import NodeTracker
 from ..utils.logging import LoggerMixin
 
 
