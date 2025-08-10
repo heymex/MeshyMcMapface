@@ -1,12 +1,37 @@
 # MeshyMcMapface
-My attempt to "vibe code" a Meshtastic mapping utility based on agent-collector architecture
+A distributed Meshtastic mesh network monitoring system with modular, extensible architecture.
 
-# MeshyMcMapface MVP Setup Guide
+## Architecture Overview
 
-## Overview
-This MVP provides a distributed monitoring system for Meshtastic mesh networks with:
-- **MeshyMcMapface Agent**: Connects to local Meshtastic nodes and collects data
+MeshyMcMapface provides a distributed monitoring system for Meshtastic mesh networks with:
+- **Modular Agent System**: Connects to local Meshtastic nodes and collects data
+- **Multi-Server Support**: Route data to multiple servers with different configurations
 - **Central Server**: Aggregates data from multiple agents with web dashboard
+- **Plugin Architecture**: Easily extensible for new packet types, server protocols, and features
+
+### New Modular Structure
+
+```
+src/
+├── core/                   # Core system components
+│   ├── config.py          # Configuration management
+│   ├── database.py        # Database abstraction layer
+│   └── exceptions.py      # Custom exceptions
+├── meshtastic/            # Meshtastic integration
+│   ├── connections.py     # Connection handling
+│   ├── packet_parser.py   # Pluggable packet processors
+│   └── node_tracker.py    # Node status tracking
+├── servers/               # Server communication
+│   ├── client.py          # Multi-server communication
+│   ├── health.py          # Health monitoring
+│   └── queue_manager.py   # Smart queuing system
+├── agents/                # Agent implementations
+│   ├── base_agent.py      # Extensible base class
+│   └── multi_server_agent.py  # Multi-server agent
+└── utils/                 # Utility functions
+    ├── logging.py         # Centralized logging
+    └── helpers.py         # Helper functions
+```
 
 ## Requirements
 
@@ -22,29 +47,53 @@ pip install meshtastic aiohttp aiosqlite configparser pubsub-api
 
 ## Quick Start
 
+### Two Agent Options Available
+
+**🚀 Recommended: New Modular Agent**
+- Better architecture and extensibility
+- Multi-server support built-in
+- Enhanced error handling and logging
+
+**📦 Legacy Agent**
+- Original implementation
+- Single/multi-server support
+- Maintained for compatibility
+
 ### 1. Setup Central Server
 
 ```bash
 # Create server configuration
-python enhanced_server_mvp.py --create-config
+python mmm-server.py --create-config
 
 # Start server
-python enhanced_server_mvp.py --config server_config.ini
+python mmm-server.py --config server_config.ini
 ```
 
 The server will start at `http://localhost:8082` with a web dashboard and auto-generated API keys for agents.
 
 ### 2. Setup MeshyMcMapface Agent
 
+#### Option A: New Modular Agent (Recommended)
+
+```bash
+# Create multi-server configuration
+python mmm-agent-modular.py --create-config
+
+# Edit multi_agent_config.ini with your settings
+nano multi_agent_config.ini
+
+# Start modular agent with advanced logging
+python mmm-agent-modular.py --config multi_agent_config.ini --log-level INFO --log-file agent.log
+```
+
+#### Option B: Legacy Agent
+
 ```bash
 # Create agent configuration
-python mesh_agent_mvp.py --create-config
+python mmm-agent.py --create-config
 
-# Edit agent_config.ini with your settings
-nano agent_config.ini
-
-# Start agent
-python mesh_agent_mvp.py --config agent_config.ini
+# Start legacy agent
+python mmm-agent.py --config multi_agent_config.ini
 ```
 
 ## Configuration
@@ -63,7 +112,7 @@ agent_001 = <generated-api-key>
 agent_002 = <generated-api-key>
 ```
 
-### Agent Configuration (`agent_config.ini`)
+### Multi-Server Agent Configuration (`multi_agent_config.ini`)
 ```ini
 [agent]
 id = agent_sf_bay_001
@@ -71,16 +120,46 @@ location_name = San Francisco Bay Area
 location_lat = 37.7749
 location_lon = -122.4194
 
-[server]
-url = http://your-server:8082
-api_key = <your-api-key-from-server>
-report_interval = 30
-
 [meshtastic]
 connection_type = auto
 # device_path = /dev/ttyUSB0        # For USB/Serial
 # tcp_host = 192.168.1.100         # For WiFi nodes
 # ble_address = AA:BB:CC:DD:EE:FF  # For Bluetooth
+
+# Primary server - real-time monitoring
+[server_primary]
+url = http://localhost:8082
+api_key = primary-server-key
+enabled = true
+report_interval = 30
+packet_types = all
+priority = 1
+max_retries = 3
+timeout = 10
+
+# Backup server - redundant reporting
+[server_backup]
+url = http://backup.example.com:8082
+api_key = backup-server-key
+enabled = true
+report_interval = 60
+packet_types = all
+priority = 2
+max_retries = 5
+timeout = 15
+
+# Analytics server - specific data only
+[server_analytics]
+url = http://analytics.example.com:8083
+api_key = analytics-server-key
+enabled = true
+report_interval = 300
+packet_types = position,telemetry
+priority = 3
+max_retries = 2
+timeout = 30
+# filter_nodes = node1,node2        # Only these nodes
+# exclude_nodes = private_node      # Exclude these nodes
 ```
 
 ## Connection Types
@@ -267,15 +346,86 @@ curl -X POST -H "Content-Type: application/json" \
 3. Database clustering
 4. Monitoring and logging infrastructure
 
+## Modular Architecture Benefits
+
+### Easy Feature Extension
+The new modular architecture makes adding features straightforward:
+
+#### Adding New Packet Types
+```python
+# Create custom packet handler
+class MyCustomHandler(PacketHandler):
+    def can_handle(self, packet: Dict) -> bool:
+        return 'my_data' in packet.get('decoded', {})
+    
+    def process(self, packet: Dict) -> Dict:
+        # Custom processing logic
+        return processed_packet_data
+
+# Add to processor
+packet_processor.add_handler(MyCustomHandler())
+```
+
+#### Adding New Server Types
+```python
+# Extend server client for custom protocols
+class MyCustomServerClient(ServerClient):
+    async def send_data(self, agent_config, packets, node_status):
+        # Custom server communication
+        pass
+```
+
+#### Adding New Agent Behaviors
+```python
+# Extend base agent
+class MyCustomAgent(BaseAgent):
+    def _handle_processed_packet(self, packet_data: Dict):
+        # Custom packet handling
+        pass
+```
+
+### Migration Path
+
+**From Legacy → Modular:**
+1. Both agents use same configuration format
+2. Same database schema
+3. Gradual migration possible
+4. No server changes required
+
+**Benefits of Modular Version:**
+- ✅ Better error handling and recovery
+- ✅ Pluggable packet processors  
+- ✅ Multi-server health monitoring
+- ✅ Repository pattern for data access
+- ✅ Centralized logging and configuration
+- ✅ Easy to add new features
+- ✅ Better testing and maintainability
+
+## Future Enhancements Made Easy
+
+With the modular structure, these features can be added as separate modules:
+
+1. **Web Dashboard**: `src/web/` module
+2. **Metrics/Monitoring**: `src/metrics/` module  
+3. **Alerting System**: `src/alerts/` module
+4. **API Server**: `src/api/` module
+5. **Plugin System**: Extend handler architecture
+6. **Cloud Integration**: Cloud-specific clients
+7. **Mobile Apps**: Mobile API endpoints
+8. **Machine Learning**: ML-based analysis modules
+
 ## Support and Contributing
 
-This MVP provides a solid foundation for distributed mesh monitoring called **MeshyMcMapface**. The modular architecture allows for easy extension and customization based on specific deployment needs.
+MeshyMcMapface provides a solid foundation for distributed mesh monitoring with a **modular, extensible architecture**. The plugin-based system allows for easy customization and feature addition.
 
 Key areas for contribution:
 - Enhanced web UI with interactive maps
-- Advanced analytics and reporting
+- Advanced analytics and reporting  
 - Mobile applications
 - Integration with other mesh technologies
 - Performance optimizations
+- Custom packet handlers
+- Additional server protocols
+- Monitoring and alerting systems
 
-The system is designed to be lightweight, reliable, and easy to deploy while providing comprehensive monitoring capabilities for Meshtastic mesh networks through **MeshyMcMapface**.
+The system is designed to be lightweight, reliable, and easy to deploy while providing comprehensive monitoring capabilities for Meshtastic mesh networks.
