@@ -211,3 +211,5 @@ agent*db
 *config.ini
 mmm-*/
 *.db
+.claude
+

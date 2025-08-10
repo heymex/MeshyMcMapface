@@ -1150,8 +1150,13 @@ class DistributedMeshyMcMapfaceServer:
                 }
                 
                 const data = await response.json();
-                console.log('Nodes data:', data);
+                console.log('Raw API response:', data);
+                console.log('Nodes array:', data.nodes);
+                console.log('Number of nodes:', data.nodes ? data.nodes.length : 'undefined');
+                
                 currentNodes = data.nodes || [];
+                console.log('currentNodes set to:', currentNodes);
+                console.log('currentNodes length:', currentNodes.length);
                 
                 displayNodes();
                 
@@ -1161,20 +1166,32 @@ class DistributedMeshyMcMapfaceServer:
         }
         
         function displayNodes() {
+            console.log('displayNodes called with currentNodes.length:', currentNodes.length);
             const tbody = document.querySelector('#nodes-table tbody');
+            console.log('tbody element found:', !!tbody);
+            
+            if (!tbody) {
+                console.error('Could not find tbody element');
+                return;
+            }
+            
             tbody.innerHTML = '';
             
             if (currentNodes.length === 0) {
-                console.log('No nodes found');
+                console.log('No nodes found, showing empty message');
                 const row = tbody.insertRow();
                 row.innerHTML = '<td colspan="9" style="text-align: center;">No nodes found</td>';
                 return;
             }
             
+            console.log('Processing', currentNodes.length, 'nodes...');
+            
             currentNodes.forEach((node, index) => {
+                console.log('Processing node', index, ':', node.node_id, node);
                 const row = tbody.insertRow();
                 const lastSeen = new Date(node.updated_at).toLocaleString();
                 const isActive = new Date() - new Date(node.updated_at) < 60 * 60 * 1000;
+                console.log('Node', node.node_id, 'processed, isActive:', isActive);
                 
                 // Format names
                 let nameDisplay = node.node_id;
@@ -1300,8 +1317,14 @@ class DistributedMeshyMcMapfaceServer:
             if (showPacketDetails) {
                 button.textContent = 'Hide Packet Details';
                 detailsDiv.style.display = 'block';
-                // Show packets for all nodes
-                showAllPackets();
+                
+                // Show a simple message if no nodes, otherwise show packets
+                const contentDiv = document.getElementById('packet-details-content');
+                if (currentNodes.length === 0) {
+                    contentDiv.innerHTML = '<div class="packet-section"><h4>Packet Details View</h4><p>No nodes with packets currently available. This section will show detailed packet information when agents are sending data to the server.</p><p><strong>What you\'ll see here:</strong></p><ul><li>Recent packets from all nodes</li><li>Packet types (position, telemetry, text messages, etc.)</li><li>Detailed payload information</li><li>Which agent received each packet</li><li>Signal strength data</li></ul></div>';
+                } else {
+                    showAllPackets();
+                }
             } else {
                 button.textContent = 'Show Packet Details';
                 detailsDiv.style.display = 'none';
@@ -1309,63 +1332,74 @@ class DistributedMeshyMcMapfaceServer:
         }
         
         function showAllPackets() {
+            console.log('showAllPackets called, nodes:', currentNodes.length);
             const contentDiv = document.getElementById('packet-details-content');
             
             if (currentNodes.length === 0) {
                 contentDiv.innerHTML = '<p>No nodes to show packets for</p>';
+                console.log('No nodes available');
                 return;
             }
             
             let html = '<h4>Recent Packets from All Nodes</h4>';
             
-            // Collect all packets from all nodes
-            let allPackets = [];
-            currentNodes.forEach(node => {
-                if (node.recent_packets) {
-                    node.recent_packets.forEach(packet => {
-                        allPackets.push({
-                            ...packet,
-                            node_id: node.node_id,
-                            node_name: node.short_name || node.long_name || node.node_id
+            try {
+                // Collect all packets from all nodes
+                let allPackets = [];
+                currentNodes.forEach(node => {
+                    if (node.recent_packets) {
+                        node.recent_packets.forEach(packet => {
+                            allPackets.push({
+                                ...packet,
+                                node_id: node.node_id,
+                                node_name: node.short_name || node.long_name || node.node_id
+                            });
                         });
-                    });
+                    }
+                });
+                
+                console.log('Total packets collected:', allPackets.length);
+                
+                // Sort by timestamp
+                allPackets.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                
+                if (allPackets.length === 0) {
+                    contentDiv.innerHTML = html + '<p>No recent packets found</p>';
+                    return;
                 }
-            });
-            
-            // Sort by timestamp
-            allPackets.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-            
-            if (allPackets.length === 0) {
-                contentDiv.innerHTML = html + '<p>No recent packets found</p>';
-                return;
+                
+                html += '<table class="table" style="font-size: 0.9em;">';
+                html += '<thead><tr><th>Timestamp</th><th>From Node</th><th>Type</th><th>Agent</th><th>Payload</th><th>Signal</th></tr></thead><tbody>';
+                
+                allPackets.slice(0, 50).forEach(packet => {  // Limit to 50 most recent
+                    const timestamp = new Date(packet.timestamp).toLocaleString();
+                    let payloadDisplay = formatPayload(packet.type, packet.payload);
+                    
+                    let signalInfo = '';
+                    if (packet.rssi) signalInfo += `${packet.rssi} dBm`;
+                    if (packet.snr) signalInfo += ` / ${packet.snr} dB`;
+                    if (!signalInfo) signalInfo = '-';
+                    
+                    html += `
+                        <tr>
+                            <td>${timestamp}</td>
+                            <td><strong>${packet.node_name}</strong></td>
+                            <td><span style="background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${packet.type}</span></td>
+                            <td>${packet.agent_location}</td>
+                            <td style="max-width: 400px; overflow: hidden;">${payloadDisplay}</td>
+                            <td>${signalInfo}</td>
+                        </tr>
+                    `;
+                });
+                
+                html += '</tbody></table>';
+                contentDiv.innerHTML = html;
+                console.log('All packets table created successfully');
+                
+            } catch (error) {
+                console.error('Error in showAllPackets:', error);
+                contentDiv.innerHTML = html + '<p>Error loading packets: ' + error.message + '</p>';
             }
-            
-            html += '<table class="table" style="font-size: 0.9em;">';
-            html += '<thead><tr><th>Timestamp</th><th>From Node</th><th>Type</th><th>Agent</th><th>Payload</th><th>Signal</th></tr></thead><tbody>';
-            
-            allPackets.slice(0, 50).forEach(packet => {  // Limit to 50 most recent
-                const timestamp = new Date(packet.timestamp).toLocaleString();
-                let payloadDisplay = formatPayload(packet.type, packet.payload);
-                
-                let signalInfo = '';
-                if (packet.rssi) signalInfo += `${packet.rssi} dBm`;
-                if (packet.snr) signalInfo += ` / ${packet.snr} dB`;
-                if (!signalInfo) signalInfo = '-';
-                
-                html += `
-                    <tr>
-                        <td>${timestamp}</td>
-                        <td><strong>${packet.node_name}</strong></td>
-                        <td><span style="background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${packet.type}</span></td>
-                        <td>${packet.agent_location}</td>
-                        <td style="max-width: 400px; overflow: hidden;">${payloadDisplay}</td>
-                        <td>${signalInfo}</td>
-                    </tr>
-                `;
-            });
-            
-            html += '</tbody></table>';
-            contentDiv.innerHTML = html;
         }
         
         function formatPayload(type, payload) {
@@ -1394,8 +1428,28 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
-        // Initial load
-        loadNodes();
+        // Ensure initial load happens after DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded, initializing nodes page...');
+            console.log('Testing DOM elements...');
+            console.log('hours-filter element:', document.getElementById('hours-filter'));
+            console.log('nodes-table element:', document.getElementById('nodes-table'));
+            console.log('tbody element:', document.querySelector('#nodes-table tbody'));
+            
+            // Add visible indicator that JS is running
+            const header = document.querySelector('.header h1');
+            if (header) {
+                header.innerHTML += ' <span style="color: green;">(JS Loaded)</span>';
+            }
+            
+            const button = document.getElementById('view-toggle');
+            if (button) {
+                button.onclick = toggleView;
+            }
+            
+            // Initial load after DOM is ready
+            loadNodes();
+        });
         
         // Refresh every 30 seconds
         setInterval(loadNodes, 30000);
