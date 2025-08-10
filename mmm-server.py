@@ -109,15 +109,27 @@ class DistributedMeshyMcMapfaceServer:
             )
         ''')
         
-        # User info table for node names
+        # User info table for node names and detailed info
         await self.db.execute('''
             CREATE TABLE IF NOT EXISTS user_info (
                 node_id TEXT PRIMARY KEY,
                 short_name TEXT,
                 long_name TEXT,
                 macaddr TEXT,
+                hw_model TEXT,
+                role TEXT,
+                battery_level INTEGER,
+                voltage REAL,
+                channel_utilization REAL,
+                air_util_tx REAL,
+                uptime_seconds INTEGER,
+                hops_away INTEGER,
+                last_heard INTEGER,
+                is_favorite BOOLEAN DEFAULT 0,
+                is_licensed BOOLEAN DEFAULT 0,
                 last_updated TEXT,
-                first_seen_by_agent TEXT
+                first_seen_by_agent TEXT,
+                data_source TEXT DEFAULT 'packet'
             )
         ''')
         
@@ -134,6 +146,7 @@ class DistributedMeshyMcMapfaceServer:
         # API routes
         self.app.router.add_post('/api/agent/register', self.register_agent)
         self.app.router.add_post('/api/agent/data', self.receive_agent_data)
+        self.app.router.add_post('/api/agent/nodedb', self.receive_nodedb_data)
         self.app.router.add_get('/api/agents', self.list_agents)
         self.app.router.add_get('/api/agents/{agent_id}/status', self.agent_status)
         self.app.router.add_get('/api/packets', self.get_packets)
@@ -286,6 +299,78 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error receiving agent data: {e}")
+            return web.json_response({'error': str(e)}, status=400)
+    
+    async def receive_nodedb_data(self, request):
+        """Receive nodedb data from meshtastic command output"""
+        try:
+            data = await request.json()
+            
+            agent_id = data['agent_id']
+            timestamp = data['timestamp']
+            nodes_data = data.get('nodes', {})
+            
+            # Update agent last seen
+            await self.db.execute('''
+                UPDATE agents SET last_seen = ? WHERE agent_id = ?
+            ''', (timestamp, agent_id))
+            
+            # Process each node from meshtastic --info output
+            for node_id, node_info in nodes_data.items():
+                user = node_info.get('user', {})
+                position = node_info.get('position', {})
+                device_metrics = node_info.get('deviceMetrics', {})
+                
+                # Update user_info with rich data
+                await self.db.execute('''
+                    INSERT OR REPLACE INTO user_info
+                    (node_id, short_name, long_name, macaddr, hw_model, role,
+                     battery_level, voltage, channel_utilization, air_util_tx,
+                     uptime_seconds, hops_away, last_heard, is_favorite, is_licensed,
+                     last_updated, first_seen_by_agent, data_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    node_id,
+                    user.get('shortName', ''),
+                    user.get('longName', ''),
+                    user.get('macaddr', ''),
+                    user.get('hwModel', ''),
+                    user.get('role', ''),
+                    device_metrics.get('batteryLevel'),
+                    device_metrics.get('voltage'),
+                    device_metrics.get('channelUtilization'),
+                    device_metrics.get('airUtilTx'),
+                    device_metrics.get('uptimeSeconds'),
+                    node_info.get('hopsAway'),
+                    node_info.get('lastHeard'),
+                    node_info.get('isFavorite', False),
+                    user.get('isLicensed', False),
+                    timestamp,
+                    agent_id,
+                    'meshtastic_cmd'
+                ))
+                
+                # Also update position if available
+                if position.get('latitude') and position.get('longitude'):
+                    await self.db.execute('''
+                        INSERT OR REPLACE INTO nodes
+                        (node_id, agent_id, last_seen, battery_level, position_lat, 
+                         position_lon, rssi, snr, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        node_id, agent_id, timestamp,
+                        device_metrics.get('batteryLevel'),
+                        position.get('latitude'), position.get('longitude'),
+                        None, node_info.get('snr'), timestamp
+                    ))
+            
+            await self.db.commit()
+            
+            self.logger.info(f"Updated nodedb data for {len(nodes_data)} nodes from {agent_id}")
+            return web.json_response({'status': 'success', 'updated': len(nodes_data)})
+            
+        except Exception as e:
+            self.logger.error(f"Error receiving nodedb data: {e}")
             return web.json_response({'error': str(e)}, status=400)
     
     async def list_agents(self, request):
@@ -567,12 +652,14 @@ class DistributedMeshyMcMapfaceServer:
             hours = int(request.query.get('hours', 24))
             limit = int(request.query.get('limit', 100))
             
-            # Get nodes with user info and recent packet counts
+            # Get nodes with enhanced user info and recent packet counts
             query = '''
                 SELECT DISTINCT n.node_id, 
-                       u.short_name, u.long_name, u.macaddr,
-                       n.battery_level, n.position_lat, n.position_lon,
+                       u.short_name, u.long_name, u.macaddr, u.hw_model, u.role,
+                       COALESCE(u.battery_level, n.battery_level) as battery_level,
+                       n.position_lat, n.position_lon,
                        n.rssi, n.snr, n.updated_at,
+                       u.voltage, u.channel_utilization, u.air_util_tx, u.uptime_seconds, u.hops_away,
                        (SELECT COUNT(*) FROM packets p WHERE p.from_node = n.node_id 
                         AND datetime(p.timestamp) > datetime('now', '-{} hours')) as packet_count,
                        (SELECT COUNT(DISTINCT p.agent_id) FROM packets p WHERE p.from_node = n.node_id
@@ -598,14 +685,21 @@ class DistributedMeshyMcMapfaceServer:
                     'short_name': node[1] or '',
                     'long_name': node[2] or '',
                     'macaddr': node[3] or '',
-                    'battery_level': node[4],
-                    'position': [node[5], node[6]] if node[5] and node[6] else None,
-                    'rssi': node[7],
-                    'snr': node[8],
-                    'updated_at': node[9],
-                    'packet_count': node[10],
-                    'agent_count': node[11],
-                    'seeing_agents': node[12].split(',') if node[12] else []
+                    'hw_model': node[4] or '',
+                    'role': node[5] or '',
+                    'battery_level': node[6],
+                    'position': [node[7], node[8]] if node[7] and node[8] else None,
+                    'rssi': node[9],
+                    'snr': node[10],
+                    'updated_at': node[11],
+                    'voltage': node[12],
+                    'channel_utilization': node[13],
+                    'air_util_tx': node[14],
+                    'uptime_seconds': node[15],
+                    'hops_away': node[16],
+                    'packet_count': node[17],
+                    'agent_count': node[18],
+                    'seeing_agents': node[19].split(',') if node[19] else []
                 }
                 
                 # Get recent packet samples for this node
@@ -1133,6 +1227,8 @@ class DistributedMeshyMcMapfaceServer:
     </div>
     
     <script>
+        console.log('Script tag loaded');
+        
         let showPacketDetails = false;
         let currentNodes = [];
         
@@ -1237,11 +1333,17 @@ class DistributedMeshyMcMapfaceServer:
                     <td class="${batteryClass}">${batteryDisplay}</td>
                     <td>${positionDisplay}</td>
                     <td>${signalDisplay}</td>
-                    <td><span style="cursor: pointer; color: #2196F3;" onclick="showPackets(${index})">${node.packet_count}</span></td>
+                    <td><span style="cursor: pointer; color: #2196F3;">${node.packet_count}</span></td>
                     <td class="${isActive ? 'status-active' : 'status-inactive'}">
                         ${isActive ? 'Active' : 'Inactive'}
                     </td>
                 `;
+                
+                // Add click handler for packet count
+                const packetSpan = row.querySelector('span');
+                if (packetSpan) {
+                    packetSpan.onclick = () => showPackets(index);
+                }
             });
         }
         
@@ -1321,7 +1423,7 @@ class DistributedMeshyMcMapfaceServer:
                 // Show a simple message if no nodes, otherwise show packets
                 const contentDiv = document.getElementById('packet-details-content');
                 if (currentNodes.length === 0) {
-                    contentDiv.innerHTML = '<div class="packet-section"><h4>Packet Details View</h4><p>No nodes with packets currently available. This section will show detailed packet information when agents are sending data to the server.</p><p><strong>What you\'ll see here:</strong></p><ul><li>Recent packets from all nodes</li><li>Packet types (position, telemetry, text messages, etc.)</li><li>Detailed payload information</li><li>Which agent received each packet</li><li>Signal strength data</li></ul></div>';
+                    contentDiv.innerHTML = '<div class="packet-section"><h4>Packet Details View</h4><p>No nodes with packets currently available. This section will show detailed packet information when agents are sending data to the server.</p><p><strong>What you will see here:</strong></p><ul><li>Recent packets from all nodes</li><li>Packet types (position, telemetry, text messages, etc.)</li><li>Detailed payload information</li><li>Which agent received each packet</li><li>Signal strength data</li></ul></div>';
                 } else {
                     showAllPackets();
                 }
@@ -1431,10 +1533,6 @@ class DistributedMeshyMcMapfaceServer:
         // Ensure initial load happens after DOM is ready
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM loaded, initializing nodes page...');
-            console.log('Testing DOM elements...');
-            console.log('hours-filter element:', document.getElementById('hours-filter'));
-            console.log('nodes-table element:', document.getElementById('nodes-table'));
-            console.log('tbody element:', document.querySelector('#nodes-table tbody'));
             
             // Add visible indicator that JS is running
             const header = document.querySelector('.header h1');
@@ -1442,13 +1540,16 @@ class DistributedMeshyMcMapfaceServer:
                 header.innerHTML += ' <span style="color: green;">(JS Loaded)</span>';
             }
             
+            // Run test to verify DOM access
+            testJS();
+            
             const button = document.getElementById('view-toggle');
             if (button) {
                 button.onclick = toggleView;
             }
             
             // Initial load after DOM is ready
-            loadNodes();
+            setTimeout(loadNodes, 1000); // Add small delay
         });
         
         // Refresh every 30 seconds
@@ -1461,7 +1562,196 @@ class DistributedMeshyMcMapfaceServer:
     
     async def packets_page(self, request):
         """Packets page with filtering"""
-        return web.Response(text="Packets page - Coming soon!", content_type='text/html')
+        html = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Packets - MeshyMcMapface</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+        .table th, .table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        .table th { background: #f8f9fa; position: sticky; top: 0; }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
+        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
+        .nav a:hover { background: #e3f2fd; }
+        .nav a.active { background: #2196F3; color: white; }
+        .filter-controls { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; }
+        .filter-controls label { font-weight: bold; }
+        .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; }
+        .packet-type { background: #e3f2fd; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; }
+        .packet-payload { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .clickable { cursor: pointer; color: #2196F3; }
+        .clickable:hover { text-decoration: underline; }
+        .table-container { max-height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Network Packets</h1>
+            <p>All packets received across the mesh network</p>
+        </div>
+        
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/agents">Agents</a>
+            <a href="/packets" class="active">Packets</a>
+            <a href="/nodes">Nodes</a>
+            <a href="/map">Map</a>
+        </div>
+        
+        <div class="section">
+            <h2>Recent Packets</h2>
+            <div class="filter-controls">
+                <label for="hours-filter">Time range:</label>
+                <select id="hours-filter" onchange="loadPackets()">
+                    <option value="1">Last 1 hour</option>
+                    <option value="6">Last 6 hours</option>
+                    <option value="24" selected>Last 24 hours</option>
+                    <option value="168">Last 7 days</option>
+                </select>
+                
+                <label for="type-filter">Packet type:</label>
+                <select id="type-filter" onchange="loadPackets()">
+                    <option value="all">All types</option>
+                    <option value="position">Position</option>
+                    <option value="telemetry">Telemetry</option>
+                    <option value="text">Text</option>
+                    <option value="user_info">User Info</option>
+                </select>
+                
+                <label for="agent-filter">Agent:</label>
+                <select id="agent-filter" onchange="loadPackets()">
+                    <option value="all">All agents</option>
+                </select>
+                
+                <label for="limit-filter">Show:</label>
+                <select id="limit-filter" onchange="loadPackets()">
+                    <option value="50">50 packets</option>
+                    <option value="100" selected>100 packets</option>
+                    <option value="500">500 packets</option>
+                    <option value="1000">1000 packets</option>
+                </select>
+                
+                <button onclick="loadPackets()" style="background: #4CAF50; color: white; border: none;">Refresh</button>
+            </div>
+            
+            <div class="table-container">
+                <table class="table" id="packets-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>From Node</th>
+                            <th>To Node</th>
+                            <th>Type</th>
+                            <th>Agent</th>
+                            <th>RSSI</th>
+                            <th>SNR</th>
+                            <th>Payload</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        console.log('Packets page script loaded');
+        
+        async function loadPackets() {
+            console.log('loadPackets called');
+            try {
+                const hours = document.getElementById('hours-filter').value;
+                const type = document.getElementById('type-filter').value;
+                const agent = document.getElementById('agent-filter').value;
+                const limit = document.getElementById('limit-filter').value;
+                
+                let url = `/api/packets?hours=${hours}&limit=${limit}`;
+                if (type !== 'all') url += `&type=${type}`;
+                if (agent !== 'all') url += `&agent_id=${agent}`;
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                const tbody = document.querySelector('#packets-table tbody');
+                tbody.innerHTML = '';
+                
+                if (!data.packets || data.packets.length === 0) {
+                    const row = tbody.insertRow();
+                    row.innerHTML = '<td colspan="8" style="text-align: center;">No packets found</td>';
+                    return;
+                }
+                
+                data.packets.forEach(packet => {
+                    const row = tbody.insertRow();
+                    const timestamp = new Date(packet.timestamp).toLocaleString();
+                    
+                    row.innerHTML = `
+                        <td>${timestamp}</td>
+                        <td><strong>${packet.from_node}</strong></td>
+                        <td>${packet.to_node || 'Broadcast'}</td>
+                        <td><span class="packet-type">${packet.type}</span></td>
+                        <td>${packet.agent_location}</td>
+                        <td>${packet.rssi || '-'}</td>
+                        <td>${packet.snr || '-'}</td>
+                        <td class="packet-payload">${formatPayload(packet.payload)}</td>
+                    `;
+                });
+                
+            } catch (error) {
+                console.error('Error loading packets:', error);
+            }
+        }
+        
+        async function loadAgents() {
+            try {
+                const response = await fetch('/api/agents');
+                const data = await response.json();
+                
+                const select = document.getElementById('agent-filter');
+                select.innerHTML = '<option value="all">All agents</option>';
+                
+                if (data.agents) {
+                    data.agents.forEach(agent => {
+                        const option = document.createElement('option');
+                        option.value = agent.agent_id;
+                        option.textContent = agent.location_name;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading agents:', error);
+            }
+        }
+        
+        function formatPayload(payload) {
+            if (!payload) return '-';
+            if (typeof payload === 'object') {
+                const keys = Object.keys(payload);
+                if (keys.length === 0) return 'Empty';
+                return keys.map(key => `${key}: ${JSON.stringify(payload[key])}`).join(', ');
+            }
+            return String(payload);
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            loadAgents();
+            loadPackets();
+        });
+        
+        setInterval(loadPackets, 30000);
+    </script>
+</body>
+</html>
+        '''
+        return web.Response(text=html, content_type='text/html')
     
     async def map_page(self, request):
         """Interactive map page showing nodes and agents"""
