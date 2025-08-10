@@ -209,3 +209,5 @@ __marimo__/
 # Locally relevant for this app
 agent*db
 *config.ini
+mmm-*/
+*.db

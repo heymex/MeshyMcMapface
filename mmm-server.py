@@ -109,6 +109,18 @@ class DistributedMeshyMcMapfaceServer:
             )
         ''')
         
+        # User info table for node names
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS user_info (
+                node_id TEXT PRIMARY KEY,
+                short_name TEXT,
+                long_name TEXT,
+                macaddr TEXT,
+                last_updated TEXT,
+                first_seen_by_agent TEXT
+            )
+        ''')
+        
         # Create indexes for performance
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_timestamp ON packets(timestamp)')
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_agent ON packets(agent_id)')
@@ -126,6 +138,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/agents/{agent_id}/status', self.agent_status)
         self.app.router.add_get('/api/packets', self.get_packets)
         self.app.router.add_get('/api/nodes', self.get_nodes)
+        self.app.router.add_get('/api/nodes/detailed', self.get_nodes_detailed)
         self.app.router.add_get('/api/stats', self.get_stats)
         self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
         self.app.router.add_get('/api/debug/nodes', self.debug_nodes)  # Debug nodes
@@ -206,7 +219,7 @@ class DistributedMeshyMcMapfaceServer:
                 WHERE agent_id = ?
             ''', (timestamp, len(packets), agent_id))
             
-            # Insert packets
+            # Insert packets and handle user_info
             for packet in packets:
                 await self.db.execute('''
                     INSERT INTO packets 
@@ -220,6 +233,24 @@ class DistributedMeshyMcMapfaceServer:
                     packet.get('rssi'), packet.get('snr'), packet.get('hop_limit'),
                     packet.get('want_ack')
                 ))
+                
+                # Handle user_info packets to store names
+                if packet.get('type') == 'user_info' and packet.get('payload'):
+                    payload = packet['payload']
+                    node_id = packet.get('from_node')
+                    if node_id and isinstance(payload, dict):
+                        await self.db.execute('''
+                            INSERT OR REPLACE INTO user_info
+                            (node_id, short_name, long_name, macaddr, last_updated, first_seen_by_agent)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (
+                            node_id,
+                            payload.get('short_name', ''),
+                            payload.get('long_name', ''),
+                            payload.get('macaddr', ''),
+                            packet['timestamp'],
+                            agent_id
+                        ))
             
             # Update node status
             for node in node_status:
@@ -528,6 +559,92 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error getting nodes: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_nodes_detailed(self, request):
+        """Get detailed node information with packet history and user info"""
+        try:
+            hours = int(request.query.get('hours', 24))
+            limit = int(request.query.get('limit', 100))
+            
+            # Get nodes with user info and recent packet counts
+            query = '''
+                SELECT DISTINCT n.node_id, 
+                       u.short_name, u.long_name, u.macaddr,
+                       n.battery_level, n.position_lat, n.position_lon,
+                       n.rssi, n.snr, n.updated_at,
+                       (SELECT COUNT(*) FROM packets p WHERE p.from_node = n.node_id 
+                        AND datetime(p.timestamp) > datetime('now', '-{} hours')) as packet_count,
+                       (SELECT COUNT(DISTINCT p.agent_id) FROM packets p WHERE p.from_node = n.node_id
+                        AND datetime(p.timestamp) > datetime('now', '-{} hours')) as agent_count,
+                       (SELECT GROUP_CONCAT(DISTINCT a.location_name) 
+                        FROM packets p JOIN agents a ON p.agent_id = a.agent_id 
+                        WHERE p.from_node = n.node_id 
+                        AND datetime(p.timestamp) > datetime('now', '-{} hours')) as seeing_agents
+                FROM nodes n
+                LEFT JOIN user_info u ON n.node_id = u.node_id
+                WHERE datetime(n.updated_at) > datetime('now', '-{} hours')
+                ORDER BY n.updated_at DESC
+                LIMIT ?
+            '''.format(hours, hours, hours, hours)
+            
+            cursor = await self.db.execute(query, (limit,))
+            nodes = await cursor.fetchall()
+            
+            result = []
+            for node in nodes:
+                node_data = {
+                    'node_id': node[0],
+                    'short_name': node[1] or '',
+                    'long_name': node[2] or '',
+                    'macaddr': node[3] or '',
+                    'battery_level': node[4],
+                    'position': [node[5], node[6]] if node[5] and node[6] else None,
+                    'rssi': node[7],
+                    'snr': node[8],
+                    'updated_at': node[9],
+                    'packet_count': node[10],
+                    'agent_count': node[11],
+                    'seeing_agents': node[12].split(',') if node[12] else []
+                }
+                
+                # Get recent packet samples for this node
+                packet_cursor = await self.db.execute('''
+                    SELECT p.timestamp, p.type, p.payload, p.rssi, p.snr, 
+                           p.agent_id, a.location_name
+                    FROM packets p
+                    JOIN agents a ON p.agent_id = a.agent_id
+                    WHERE p.from_node = ? AND datetime(p.timestamp) > datetime('now', '-{} hours')
+                    ORDER BY p.timestamp DESC
+                    LIMIT 10
+                '''.format(hours), (node[0],))
+                
+                recent_packets = await packet_cursor.fetchall()
+                
+                packet_samples = []
+                for pkt in recent_packets:
+                    try:
+                        payload = json.loads(pkt[2]) if pkt[2] else None
+                    except:
+                        payload = pkt[2]
+                    
+                    packet_samples.append({
+                        'timestamp': pkt[0],
+                        'type': pkt[1],
+                        'payload': payload,
+                        'rssi': pkt[3],
+                        'snr': pkt[4],
+                        'agent_id': pkt[5],
+                        'agent_location': pkt[6]
+                    })
+                
+                node_data['recent_packets'] = packet_samples
+                result.append(node_data)
+            
+            return web.json_response({'nodes': result})
+            
+        except Exception as e:
+            self.logger.error(f"Error getting detailed nodes: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def get_stats(self, request):
@@ -951,6 +1068,14 @@ class DistributedMeshyMcMapfaceServer:
         .battery-high { color: #4CAF50; }
         .battery-medium { color: #FF9800; }
         .battery-low { color: #f44336; }
+        .packet-details-table { margin-top: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .packet-type { background: #e3f2fd; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; }
+        .clickable { cursor: pointer; color: #2196F3; text-decoration: underline; }
+        .clickable:hover { color: #1976D2; }
+        .packet-section { background: #f8f9fa; padding: 15px; border-radius: 4px; margin-top: 10px; }
+        .filter-controls { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; }
+        .filter-controls label { font-weight: bold; }
+        .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -970,29 +1095,53 @@ class DistributedMeshyMcMapfaceServer:
         
         <div class="section">
             <h2>All Network Nodes</h2>
+            <div class="filter-controls">
+                <label for="hours-filter">Show nodes active in last:</label>
+                <select id="hours-filter" onchange="loadNodes()">
+                    <option value="1">1 hour</option>
+                    <option value="6">6 hours</option>
+                    <option value="24" selected>24 hours</option>
+                    <option value="168">7 days</option>
+                </select>
+                
+                <button onclick="toggleView()" id="view-toggle">Show Packet Details</button>
+                <button onclick="loadNodes()" style="background: #4CAF50; color: white; border: none;">Refresh</button>
+            </div>
+            
             <table class="table" id="nodes-table">
                 <thead>
                     <tr>
                         <th>Node ID</th>
-                        <th>Agent</th>
+                        <th>Names</th>
+                        <th>Agents Seeing</th>
                         <th>Last Seen</th>
                         <th>Battery</th>
                         <th>Position</th>
-                        <th>Signal (RSSI)</th>
-                        <th>SNR</th>
+                        <th>Signal</th>
+                        <th>Packets (24h)</th>
                         <th>Status</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
+            
+            <div id="packet-details" style="display: none; margin-top: 20px;">
+                <h3>Recent Packet Details</h3>
+                <div id="packet-details-content"></div>
+            </div>
         </div>
     </div>
     
     <script>
-        async function loadAllNodes() {
+        let showPacketDetails = false;
+        let currentNodes = [];
+        
+        async function loadNodes() {
             try {
-                console.log('Loading nodes...');
-                const response = await fetch('/api/nodes');
+                const hours = document.getElementById('hours-filter').value;
+                console.log('Loading nodes for', hours, 'hours...');
+                
+                const response = await fetch(`/api/nodes/detailed?hours=${hours}&limit=50`);
                 console.log('Nodes response status:', response.status);
                 
                 if (!response.ok) {
@@ -1002,61 +1151,254 @@ class DistributedMeshyMcMapfaceServer:
                 
                 const data = await response.json();
                 console.log('Nodes data:', data);
+                currentNodes = data.nodes || [];
                 
-                const tbody = document.querySelector('#nodes-table tbody');
-                tbody.innerHTML = '';
+                displayNodes();
                 
-                if (!data.nodes || data.nodes.length === 0) {
-                    console.log('No nodes found');
-                    const row = tbody.insertRow();
-                    row.innerHTML = '<td colspan="8" style="text-align: center;">No nodes found</td>';
-                    return;
-                }
-                
-                data.nodes.forEach(node => {
-                    const row = tbody.insertRow();
-                    const lastSeen = new Date(node.updated_at).toLocaleString();
-                    const isActive = new Date() - new Date(node.updated_at) < 60 * 60 * 1000;
-                    
-                    // Format battery level with color coding
-                    let batteryDisplay = '-';
-                    let batteryClass = '';
-                    if (node.battery_level !== null) {
-                        batteryDisplay = `${node.battery_level}%`;
-                        if (node.battery_level > 50) batteryClass = 'battery-high';
-                        else if (node.battery_level > 20) batteryClass = 'battery-medium';
-                        else batteryClass = 'battery-low';
-                    }
-                    
-                    // Format position
-                    let positionDisplay = '-';
-                    if (node.position && node.position[0] && node.position[1]) {
-                        positionDisplay = `${node.position[0].toFixed(4)}, ${node.position[1].toFixed(4)}`;
-                    }
-                    
-                    row.innerHTML = `
-                        <td><strong>${node.node_id}</strong></td>
-                        <td>${node.agent_location}</td>
-                        <td>${lastSeen}</td>
-                        <td class="${batteryClass}">${batteryDisplay}</td>
-                        <td>${positionDisplay}</td>
-                        <td>${node.rssi ? node.rssi + ' dBm' : '-'}</td>
-                        <td>${node.snr ? node.snr + ' dB' : '-'}</td>
-                        <td class="${isActive ? 'status-active' : 'status-inactive'}">
-                            ${isActive ? 'Active' : 'Inactive'}
-                        </td>
-                    `;
-                });
             } catch (error) {
                 console.error('Error loading nodes:', error);
             }
         }
         
+        function displayNodes() {
+            const tbody = document.querySelector('#nodes-table tbody');
+            tbody.innerHTML = '';
+            
+            if (currentNodes.length === 0) {
+                console.log('No nodes found');
+                const row = tbody.insertRow();
+                row.innerHTML = '<td colspan="9" style="text-align: center;">No nodes found</td>';
+                return;
+            }
+            
+            currentNodes.forEach((node, index) => {
+                const row = tbody.insertRow();
+                const lastSeen = new Date(node.updated_at).toLocaleString();
+                const isActive = new Date() - new Date(node.updated_at) < 60 * 60 * 1000;
+                
+                // Format names
+                let nameDisplay = node.node_id;
+                if (node.short_name && node.long_name) {
+                    nameDisplay = `${node.short_name} (${node.long_name})`;
+                } else if (node.short_name) {
+                    nameDisplay = node.short_name;
+                } else if (node.long_name) {
+                    nameDisplay = node.long_name;
+                }
+                
+                // Format battery level with color coding
+                let batteryDisplay = '-';
+                let batteryClass = '';
+                if (node.battery_level !== null) {
+                    batteryDisplay = `${node.battery_level}%`;
+                    if (node.battery_level > 50) batteryClass = 'battery-high';
+                    else if (node.battery_level > 20) batteryClass = 'battery-medium';
+                    else batteryClass = 'battery-low';
+                }
+                
+                // Format position
+                let positionDisplay = '-';
+                if (node.position && node.position[0] && node.position[1]) {
+                    positionDisplay = `${node.position[0].toFixed(4)}, ${node.position[1].toFixed(4)}`;
+                }
+                
+                // Format signal info
+                let signalDisplay = '';
+                if (node.rssi) signalDisplay += `${node.rssi} dBm`;
+                if (node.snr) signalDisplay += ` / ${node.snr} dB`;
+                if (!signalDisplay) signalDisplay = '-';
+                
+                // Format agents seeing this node
+                let agentsDisplay = node.seeing_agents.length > 0 ? 
+                    `${node.agent_count} (${node.seeing_agents.join(', ')})` : '-';
+                
+                row.innerHTML = `
+                    <td><strong>${node.node_id}</strong></td>
+                    <td>${nameDisplay}</td>
+                    <td>${agentsDisplay}</td>
+                    <td>${lastSeen}</td>
+                    <td class="${batteryClass}">${batteryDisplay}</td>
+                    <td>${positionDisplay}</td>
+                    <td>${signalDisplay}</td>
+                    <td><span style="cursor: pointer; color: #2196F3;" onclick="showPackets(${index})">${node.packet_count}</span></td>
+                    <td class="${isActive ? 'status-active' : 'status-inactive'}">
+                        ${isActive ? 'Active' : 'Inactive'}
+                    </td>
+                `;
+            });
+        }
+        
+        function showPackets(nodeIndex) {
+            const node = currentNodes[nodeIndex];
+            const detailsDiv = document.getElementById('packet-details');
+            const contentDiv = document.getElementById('packet-details-content');
+            
+            if (!node.recent_packets || node.recent_packets.length === 0) {
+                contentDiv.innerHTML = `<p>No recent packets for ${node.node_id}</p>`;
+            } else {
+                let html = `<h4>Recent packets from ${node.node_id}</h4>`;
+                html += '<table class="table" style="font-size: 0.9em;">';
+                html += '<thead><tr><th>Timestamp</th><th>Type</th><th>Agent</th><th>Payload</th><th>Signal</th></tr></thead><tbody>';
+                
+                node.recent_packets.forEach(packet => {
+                    const timestamp = new Date(packet.timestamp).toLocaleString();
+                    let payloadDisplay = '';
+                    
+                    // Format payload based on type
+                    if (packet.type === 'position' && packet.payload) {
+                        const pos = packet.payload;
+                        payloadDisplay = `Lat: ${pos.latitude?.toFixed(4) || 'N/A'}, Lon: ${pos.longitude?.toFixed(4) || 'N/A'}`;
+                        if (pos.altitude) payloadDisplay += `, Alt: ${pos.altitude}m`;
+                    } else if (packet.type === 'telemetry' && packet.payload) {
+                        if (packet.payload.device_metrics) {
+                            const dm = packet.payload.device_metrics;
+                            payloadDisplay = `Battery: ${dm.battery_level || 'N/A'}%`;
+                            if (dm.voltage) payloadDisplay += `, Voltage: ${dm.voltage}V`;
+                            if (dm.channel_utilization) payloadDisplay += `, Ch.Util: ${dm.channel_utilization}%`;
+                        }
+                    } else if (packet.type === 'text_message' && packet.payload) {
+                        payloadDisplay = packet.payload.length > 50 ? 
+                            packet.payload.substring(0, 50) + '...' : packet.payload;
+                    } else if (packet.type === 'user_info' && packet.payload) {
+                        const ui = packet.payload;
+                        payloadDisplay = `${ui.short_name || 'N/A'} (${ui.long_name || 'N/A'})`;
+                    } else if (packet.payload) {
+                        payloadDisplay = JSON.stringify(packet.payload).substring(0, 100);
+                    } else {
+                        payloadDisplay = '-';
+                    }
+                    
+                    let signalInfo = '';
+                    if (packet.rssi) signalInfo += `${packet.rssi} dBm`;
+                    if (packet.snr) signalInfo += ` / ${packet.snr} dB`;
+                    if (!signalInfo) signalInfo = '-';
+                    
+                    html += `
+                        <tr>
+                            <td>${timestamp}</td>
+                            <td><span style="background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${packet.type}</span></td>
+                            <td>${packet.agent_location}</td>
+                            <td style="max-width: 300px; overflow: hidden;">${payloadDisplay}</td>
+                            <td>${signalInfo}</td>
+                        </tr>
+                    `;
+                });
+                
+                html += '</tbody></table>';
+                contentDiv.innerHTML = html;
+            }
+            
+            detailsDiv.style.display = 'block';
+            detailsDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        function toggleView() {
+            showPacketDetails = !showPacketDetails;
+            const button = document.getElementById('view-toggle');
+            const detailsDiv = document.getElementById('packet-details');
+            
+            if (showPacketDetails) {
+                button.textContent = 'Hide Packet Details';
+                detailsDiv.style.display = 'block';
+                // Show packets for all nodes
+                showAllPackets();
+            } else {
+                button.textContent = 'Show Packet Details';
+                detailsDiv.style.display = 'none';
+            }
+        }
+        
+        function showAllPackets() {
+            const contentDiv = document.getElementById('packet-details-content');
+            
+            if (currentNodes.length === 0) {
+                contentDiv.innerHTML = '<p>No nodes to show packets for</p>';
+                return;
+            }
+            
+            let html = '<h4>Recent Packets from All Nodes</h4>';
+            
+            // Collect all packets from all nodes
+            let allPackets = [];
+            currentNodes.forEach(node => {
+                if (node.recent_packets) {
+                    node.recent_packets.forEach(packet => {
+                        allPackets.push({
+                            ...packet,
+                            node_id: node.node_id,
+                            node_name: node.short_name || node.long_name || node.node_id
+                        });
+                    });
+                }
+            });
+            
+            // Sort by timestamp
+            allPackets.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            
+            if (allPackets.length === 0) {
+                contentDiv.innerHTML = html + '<p>No recent packets found</p>';
+                return;
+            }
+            
+            html += '<table class="table" style="font-size: 0.9em;">';
+            html += '<thead><tr><th>Timestamp</th><th>From Node</th><th>Type</th><th>Agent</th><th>Payload</th><th>Signal</th></tr></thead><tbody>';
+            
+            allPackets.slice(0, 50).forEach(packet => {  // Limit to 50 most recent
+                const timestamp = new Date(packet.timestamp).toLocaleString();
+                let payloadDisplay = formatPayload(packet.type, packet.payload);
+                
+                let signalInfo = '';
+                if (packet.rssi) signalInfo += `${packet.rssi} dBm`;
+                if (packet.snr) signalInfo += ` / ${packet.snr} dB`;
+                if (!signalInfo) signalInfo = '-';
+                
+                html += `
+                    <tr>
+                        <td>${timestamp}</td>
+                        <td><strong>${packet.node_name}</strong></td>
+                        <td><span style="background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">${packet.type}</span></td>
+                        <td>${packet.agent_location}</td>
+                        <td style="max-width: 400px; overflow: hidden;">${payloadDisplay}</td>
+                        <td>${signalInfo}</td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            contentDiv.innerHTML = html;
+        }
+        
+        function formatPayload(type, payload) {
+            if (!payload) return '-';
+            
+            if (type === 'position') {
+                const pos = payload;
+                let display = `Lat: ${pos.latitude?.toFixed(4) || 'N/A'}, Lon: ${pos.longitude?.toFixed(4) || 'N/A'}`;
+                if (pos.altitude) display += `, Alt: ${pos.altitude}m`;
+                return display;
+            } else if (type === 'telemetry') {
+                if (payload.device_metrics) {
+                    const dm = payload.device_metrics;
+                    let display = `Battery: ${dm.battery_level || 'N/A'}%`;
+                    if (dm.voltage) display += `, Voltage: ${dm.voltage}V`;
+                    if (dm.channel_utilization) display += `, Ch.Util: ${dm.channel_utilization}%`;
+                    return display;
+                }
+                return JSON.stringify(payload).substring(0, 100);
+            } else if (type === 'text_message') {
+                return payload.length > 80 ? payload.substring(0, 80) + '...' : payload;
+            } else if (type === 'user_info') {
+                return `${payload.short_name || 'N/A'} (${payload.long_name || 'N/A'})`;
+            } else {
+                return JSON.stringify(payload).substring(0, 100);
+            }
+        }
+        
         // Initial load
-        loadAllNodes();
+        loadNodes();
         
         // Refresh every 30 seconds
-        setInterval(loadAllNodes, 30000);
+        setInterval(loadNodes, 30000);
     </script>
 </body>
 </html>
