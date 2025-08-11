@@ -1907,7 +1907,7 @@ class DistributedMeshyMcMapfaceServer:
                 const timeRange = document.getElementById('time-range').value;
                 const agentFilter = document.getElementById('filter-agent').value;
                 
-                let nodesUrl = `/api/nodes?hours=${timeRange}`;
+                let nodesUrl = `/api/nodes/detailed?hours=${timeRange}&limit=500`;
                 if (agentFilter !== 'all') {
                     nodesUrl += `&agent_id=${agentFilter}`;
                 }
@@ -1974,12 +1974,25 @@ class DistributedMeshyMcMapfaceServer:
                     fillOpacity: 0.8
                 });
                 
-                // Create popup content
+                // Create popup content with names and hardware info
+                let nodeTitle = node.node_id;
+                if (node.short_name && node.long_name) {
+                    nodeTitle = `${node.short_name} (${node.long_name})`;
+                } else if (node.short_name) {
+                    nodeTitle = `${node.short_name} (${node.node_id})`;
+                } else if (node.long_name) {
+                    nodeTitle = `${node.long_name} (${node.node_id})`;
+                }
+                
                 const popupContent = `
-                    <strong>Node: ${node.node_id}</strong><br>
-                    Agent: ${node.agent_location}<br>
+                    <strong>📡 ${nodeTitle}</strong><br>
+                    ${node.hw_model ? `Hardware: ${node.hw_model}<br>` : ''}
+                    ${node.role ? `Role: ${node.role}<br>` : ''}
+                    Agent: ${node.seeing_agents ? node.seeing_agents.join(', ') : 'Unknown'}<br>
                     Last Seen: ${lastSeen.toLocaleString()}<br>
                     ${node.battery_level ? `Battery: ${node.battery_level}%<br>` : ''}
+                    ${node.voltage ? `Voltage: ${node.voltage.toFixed(2)}V<br>` : ''}
+                    ${node.hops_away !== null ? `Hops Away: ${node.hops_away}<br>` : ''}
                     ${node.rssi ? `RSSI: ${node.rssi} dBm<br>` : ''}
                     ${node.snr ? `SNR: ${node.snr} dB` : ''}
                 `;
