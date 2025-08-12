@@ -556,11 +556,21 @@ class DistributedMeshyMcMapfaceServer:
             packet_type = request.query.get('type')
             hours = int(request.query.get('hours', 24))
             
-            # Build query
+            # Build query with node name information - explicit column order
             query = '''
-                SELECT p.*, a.location_name
+                SELECT p.id, p.agent_id, p.timestamp, p.from_node, p.to_node, 
+                       p.packet_id, p.channel, p.type, p.payload, p.rssi, p.snr, 
+                       p.hop_limit, p.want_ack,
+                       a.location_name,
+                       uf.short_name as from_short_name, uf.long_name as from_long_name, 
+                       uf.hw_model as from_hw_model, uf.role as from_role,
+                       ut.short_name as to_short_name, ut.long_name as to_long_name,
+                       ut.hw_model as to_hw_model, ut.role as to_role,
+                       uf.hops_away as from_hops_away, ut.hops_away as to_hops_away
                 FROM packets p
                 JOIN agents a ON p.agent_id = a.agent_id
+                LEFT JOIN user_info uf ON p.from_node = uf.node_id
+                LEFT JOIN user_info ut ON p.to_node = ut.node_id
                 WHERE datetime(p.timestamp) > datetime('now', '-{} hours')
             '''.format(hours)
             params = []
@@ -581,13 +591,47 @@ class DistributedMeshyMcMapfaceServer:
             
             result = []
             for packet in packets:
+                # New column indices based on explicit SELECT:
+                # 0=id, 1=agent_id, 2=timestamp, 3=from_node, 4=to_node, 
+                # 5=packet_id, 6=channel, 7=type, 8=payload, 9=rssi, 10=snr, 
+                # 11=hop_limit, 12=want_ack, 13=location_name,
+                # 14=from_short_name, 15=from_long_name, 16=from_hw_model, 17=from_role,
+                # 18=to_short_name, 19=to_long_name, 20=to_hw_model, 21=to_role,
+                # 22=from_hops_away, 23=to_hops_away
+                
+                # Format from_node with name
+                from_display = packet[3]  # from_node ID
+                if packet[14] and packet[15]:  # from_short_name and from_long_name
+                    from_display = f"{packet[14]} ({packet[15]})"
+                elif packet[14]:  # just short_name
+                    from_display = f"{packet[14]} ({packet[3]})"
+                elif packet[15]:  # just long_name
+                    from_display = f"{packet[15]} ({packet[3]})"
+                
+                # Format to_node with name
+                to_display = packet[4] if packet[4] else 'Broadcast'  # to_node ID
+                if packet[4] and packet[18] and packet[19]:  # to_short_name and to_long_name
+                    to_display = f"{packet[18]} ({packet[19]})"
+                elif packet[4] and packet[18]:  # just short_name
+                    to_display = f"{packet[18]} ({packet[4]})"
+                elif packet[4] and packet[19]:  # just long_name
+                    to_display = f"{packet[19]} ({packet[4]})"
+                
                 result.append({
                     'id': packet[0],
                     'agent_id': packet[1],
-                    'agent_location': packet[12],
+                    'agent_location': packet[13],
                     'timestamp': packet[2],
                     'from_node': packet[3],
+                    'from_node_display': from_display,
+                    'from_hw_model': packet[16],
+                    'from_role': packet[17],
+                    'from_hops': packet[22],  # from hops_away
                     'to_node': packet[4],
+                    'to_node_display': to_display,
+                    'to_hw_model': packet[20],
+                    'to_role': packet[21],
+                    'to_hops': packet[23],  # to hops_away
                     'type': packet[7],
                     'payload': json.loads(packet[8]) if packet[8] else None,
                     'rssi': packet[9],
@@ -1212,6 +1256,7 @@ class DistributedMeshyMcMapfaceServer:
                         <th>Battery</th>
                         <th>Position</th>
                         <th>Signal</th>
+                        <th>Hops</th>
                         <th>Packets (24h)</th>
                         <th>Status</th>
                     </tr>
@@ -1276,7 +1321,7 @@ class DistributedMeshyMcMapfaceServer:
             if (currentNodes.length === 0) {
                 console.log('No nodes found, showing empty message');
                 const row = tbody.insertRow();
-                row.innerHTML = '<td colspan="9" style="text-align: center;">No nodes found</td>';
+                row.innerHTML = '<td colspan="10" style="text-align: center;">No nodes found</td>';
                 return;
             }
             
@@ -1325,6 +1370,17 @@ class DistributedMeshyMcMapfaceServer:
                 let agentsDisplay = node.seeing_agents.length > 0 ? 
                     `${node.agent_count} (${node.seeing_agents.join(', ')})` : '-';
                 
+                // Format hop count with color coding
+                let hopDisplay = '-';
+                let hopClass = '';
+                if (node.hops_away !== null && node.hops_away !== undefined) {
+                    hopDisplay = `${node.hops_away}`;
+                    if (node.hops_away === 0) hopClass = 'style="color: #4CAF50; font-weight: bold;"'; // Direct
+                    else if (node.hops_away <= 2) hopClass = 'style="color: #FF9800;"'; // Close
+                    else if (node.hops_away <= 4) hopClass = 'style="color: #f44336;"'; // Far
+                    else hopClass = 'style="color: #9E9E9E;"'; // Very far
+                }
+                
                 row.innerHTML = `
                     <td><strong>${node.node_id}</strong></td>
                     <td>${nameDisplay}</td>
@@ -1333,6 +1389,7 @@ class DistributedMeshyMcMapfaceServer:
                     <td class="${batteryClass}">${batteryDisplay}</td>
                     <td>${positionDisplay}</td>
                     <td>${signalDisplay}</td>
+                    <td ${hopClass}>${hopDisplay}</td>
                     <td><span style="cursor: pointer; color: #2196F3;">${node.packet_count}</span></td>
                     <td class="${isActive ? 'status-active' : 'status-inactive'}">
                         ${isActive ? 'Active' : 'Inactive'}
@@ -1695,8 +1752,8 @@ class DistributedMeshyMcMapfaceServer:
                     
                     row.innerHTML = `
                         <td>${timestamp}</td>
-                        <td><strong>${packet.from_node}</strong></td>
-                        <td>${packet.to_node || 'Broadcast'}</td>
+                        <td><strong>${packet.from_node_display}</strong>${packet.from_hw_model ? `<br><small style="color: #666;">${packet.from_hw_model}</small>` : ''}${packet.from_role ? `<br><small style="color: #888; font-style: italic;">${packet.from_role}</small>` : ''}${packet.from_hops ? `<br><small style="color: #2196F3;">🛣️ ${packet.from_hops} hops</small>` : ''}</td>
+                        <td>${packet.to_node_display}${packet.to_hw_model ? `<br><small style="color: #666;">${packet.to_hw_model}</small>` : ''}${packet.to_role ? `<br><small style="color: #888; font-style: italic;">${packet.to_role}</small>` : ''}${packet.to_hops ? `<br><small style="color: #2196F3;">🛣️ ${packet.to_hops} hops</small>` : ''}</td>
                         <td><span class="packet-type">${packet.type}</span></td>
                         <td>${packet.agent_location}</td>
                         <td>${packet.rssi || '-'}</td>
@@ -1859,25 +1916,49 @@ class DistributedMeshyMcMapfaceServer:
         </div>
         
         <div class="legend">
-            <h3>Map Legend</h3>
+            <h3>Network Topology Map</h3>
+            <div style="margin-bottom: 10px;"><strong>🛣️ Hop Distance from Agents:</strong></div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #2E7D32;"></div>
+                <span>Direct Connection (0 hops)</span>
+            </div>
             <div class="legend-item">
                 <div class="legend-icon" style="background: #4CAF50;"></div>
-                <span>Active Mesh Node (seen in last hour)</span>
+                <span>1 Hop Away</span>
             </div>
             <div class="legend-item">
                 <div class="legend-icon" style="background: #FF9800;"></div>
-                <span>Inactive Mesh Node (older than 1 hour)</span>
+                <span>2 Hops Away</span>
             </div>
             <div class="legend-item">
+                <div class="legend-icon" style="background: #F57C00;"></div>
+                <span>3 Hops Away</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #f44336;"></div>
+                <span>4 Hops Away</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-icon" style="background: #9E9E9E;"></div>
+                <span>5+ Hops or Unknown Distance</span>
+            </div>
+            <div class="legend-item" style="margin-top: 10px;">
                 <div class="legend-icon" style="background: #2196F3; transform: scale(1.3);"></div>
                 <span>MeshyMcMapface Agent</span>
             </div>
             <div class="legend-item">
-                <div class="legend-icon" style="background: #f44336;"></div>
-                <span>Node with Low Battery (<20%)</span>
+                <div class="legend-icon" style="background: #D32F2F;"></div>
+                <span>Critical Battery (<20%) - Override</span>
             </div>
-            <div style="margin-top: 10px;">
-                <strong>Lines:</strong> Recent packet transmissions between nodes
+            <div style="margin-top: 15px; border-top: 1px solid #ddd; padding-top: 10px;">
+                <strong>📡 Network Connections:</strong><br>
+                <div style="font-size: 0.9em; margin-top: 5px;">
+                    <span style="color: #4CAF50;">●━━━━</span> Text Messages (solid green)<br>
+                    <span style="color: #FF9800;">●┅┅┅┅</span> Position Data (dashed orange)<br>
+                    <span style="color: #9C27B0;">●┅┅┅┅</span> Telemetry Data (dashed purple)<br>
+                    <span style="color: #2196F3;">●┅┅┅┅</span> Other Packet Types (dashed blue)<br>
+                    <small>Line thickness = packet volume</small>
+                </div>
             </div>
         </div>
     </div>
@@ -1889,6 +1970,7 @@ class DistributedMeshyMcMapfaceServer:
         let connections = [];
         let nodeData = [];
         let agentData = [];
+        let packetData = [];
         
         // Initialize map
         function initMap() {
@@ -1924,10 +2006,11 @@ class DistributedMeshyMcMapfaceServer:
                 // Load recent packets for connections
                 const packetsResponse = await fetch(`/api/packets?limit=500&hours=${timeRange}`);
                 const packetsData = await packetsResponse.json();
+                packetData = packetsData.packets || [];
                 
                 displayNodes();
                 displayAgents();
-                displayConnections(packetsData.packets || []);
+                displayConnections(packetData);
                 updateStats();
                 updateAgentFilter();
                 
@@ -1959,10 +2042,24 @@ class DistributedMeshyMcMapfaceServer:
                 if (filterType === 'active' && !isActive) return;
                 if (filterType === 'agents') return; // Skip nodes when showing agents only
                 
-                // Determine color based on status
-                let color = '#4CAF50'; // Active
-                if (!isActive) color = '#FF9800'; // Inactive
-                if (node.battery_level && node.battery_level < 20) color = '#f44336'; // Low battery
+                // Determine color based on hop count first, then status
+                let color = '#4CAF50'; // Default active
+                
+                // Color by hop count (network topology priority)
+                if (node.hops_away !== null && node.hops_away !== undefined) {
+                    if (node.hops_away === 0) color = '#2E7D32'; // Dark green - Direct connection
+                    else if (node.hops_away === 1) color = '#4CAF50'; // Green - 1 hop
+                    else if (node.hops_away === 2) color = '#FF9800'; // Orange - 2 hops  
+                    else if (node.hops_away === 3) color = '#F57C00'; // Dark orange - 3 hops
+                    else if (node.hops_away === 4) color = '#f44336'; // Red - 4 hops
+                    else color = '#9E9E9E'; // Gray - 5+ hops or very far
+                } else {
+                    // Fallback to activity status if no hop data
+                    if (!isActive) color = '#FF9800'; // Inactive
+                }
+                
+                // Override for critical battery (always red)
+                if (node.battery_level && node.battery_level < 20) color = '#D32F2F';
                 
                 // Create marker
                 const marker = L.circleMarker([node.position[0], node.position[1]], {
@@ -1976,11 +2073,14 @@ class DistributedMeshyMcMapfaceServer:
                 
                 // Create popup content with names and hardware info
                 let nodeTitle = node.node_id;
-                if (node.short_name && node.long_name) {
+                const hasShortName = node.short_name && node.short_name.trim() !== '';
+                const hasLongName = node.long_name && node.long_name.trim() !== '';
+                
+                if (hasShortName && hasLongName) {
                     nodeTitle = `${node.short_name} (${node.long_name})`;
-                } else if (node.short_name) {
+                } else if (hasShortName) {
                     nodeTitle = `${node.short_name} (${node.node_id})`;
-                } else if (node.long_name) {
+                } else if (hasLongName) {
                     nodeTitle = `${node.long_name} (${node.node_id})`;
                 }
                 
@@ -1992,7 +2092,7 @@ class DistributedMeshyMcMapfaceServer:
                     Last Seen: ${lastSeen.toLocaleString()}<br>
                     ${node.battery_level ? `Battery: ${node.battery_level}%<br>` : ''}
                     ${node.voltage ? `Voltage: ${node.voltage.toFixed(2)}V<br>` : ''}
-                    ${node.hops_away !== null ? `Hops Away: ${node.hops_away}<br>` : ''}
+                    ${node.hops_away !== null ? `<strong>🛣️ Network Hops: ${node.hops_away}</strong><br>` : ''}
                     ${node.rssi ? `RSSI: ${node.rssi} dBm<br>` : ''}
                     ${node.snr ? `SNR: ${node.snr} dB` : ''}
                 `;
@@ -2055,16 +2155,18 @@ class DistributedMeshyMcMapfaceServer:
             
             if (!showConnections) return;
             
-            // Create connections from recent packets
+            // Create connections from recent packets (all types, not just text)
             const connectionMap = new Map();
             
             packets.forEach(packet => {
-                if (packet.type === 'text_message' && packet.from_node && packet.to_node !== '^all') {
+                // Show connections for all packet types except broadcasts
+                if (packet.from_node && packet.to_node && packet.to_node !== '^all' && packet.to_node !== 'Broadcast') {
                     const key = `${packet.from_node}-${packet.to_node}`;
                     if (!connectionMap.has(key)) {
-                        connectionMap.set(key, { count: 0, latest: packet.timestamp });
+                        connectionMap.set(key, { count: 0, latest: packet.timestamp, types: new Set() });
                     }
                     connectionMap.get(key).count++;
+                    connectionMap.get(key).types.add(packet.type);
                     if (packet.timestamp > connectionMap.get(key).latest) {
                         connectionMap.get(key).latest = packet.timestamp;
                     }
@@ -2073,25 +2175,41 @@ class DistributedMeshyMcMapfaceServer:
             
             connectionMap.forEach((data, key) => {
                 const [fromNode, toNode] = key.split('-');
-                const fromMarker = markers.get(`node_${fromNode}`);
-                const toMarker = markers.get(`node_${toNode}`);
+                let fromMarker = markers.get(`node_${fromNode}`) || markers.get(`agent_${fromNode}`);
+                let toMarker = markers.get(`node_${toNode}`) || markers.get(`agent_${toNode}`);
                 
+                // Show agent-to-node connections even if destination node isn't on map
+                // This reveals the network reach from agents
                 if (fromMarker && toMarker) {
+                    // Style connections based on activity and type
+                    let lineColor = '#2196F3'; // Default blue
+                    let lineWeight = Math.max(2, Math.min(data.count / 5, 6));
+                    let lineOpacity = 0.7;
+                    
+                    // Color code by packet types
+                    if (data.types.has('text')) lineColor = '#4CAF50'; // Green for text
+                    else if (data.types.has('position')) lineColor = '#FF9800'; // Orange for position
+                    else if (data.types.has('telemetry')) lineColor = '#9C27B0'; // Purple for telemetry
+                    
                     const line = L.polyline([
                         fromMarker.getLatLng(),
                         toMarker.getLatLng()
                     ], {
-                        color: '#666',
-                        weight: Math.min(data.count, 5),
-                        opacity: 0.6
+                        color: lineColor,
+                        weight: lineWeight,
+                        opacity: lineOpacity,
+                        dashArray: data.types.has('text') ? null : '5, 5' // Solid for text, dashed for data
                     });
                     
+                    // Enhanced popup with routing information
+                    const typesArray = Array.from(data.types);
                     line.bindPopup(`
-                        <strong>Connection</strong><br>
-                        From: ${fromNode}<br>
-                        To: ${toNode}<br>
-                        Messages: ${data.count}<br>
-                        Latest: ${new Date(data.latest).toLocaleString()}
+                        <strong>🔗 Mesh Connection</strong><br>
+                        <strong>From:</strong> ${fromNode}<br>
+                        <strong>To:</strong> ${toNode}<br>
+                        <strong>Packets:</strong> ${data.count}<br>
+                        <strong>Types:</strong> ${typesArray.join(', ')}<br>
+                        <strong>Latest:</strong> ${new Date(data.latest).toLocaleString()}
                     `);
                     
                     line.addTo(map);
@@ -2168,7 +2286,7 @@ class DistributedMeshyMcMapfaceServer:
         document.getElementById('filter-agent').addEventListener('change', refreshMap);
         document.getElementById('time-range').addEventListener('change', refreshMap);
         document.getElementById('show-connections').addEventListener('change', () => {
-            displayConnections([]); // Will reload connections based on current data
+            displayConnections(packetData); // Use actual packet data
         });
         
         // Initialize
