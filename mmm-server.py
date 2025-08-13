@@ -554,7 +554,7 @@ class DistributedMeshyMcMapfaceServer:
             limit = int(request.query.get('limit', 100))
             agent_id = request.query.get('agent_id')
             packet_type = request.query.get('type')
-            hours = int(request.query.get('hours', 24))
+            hours = int(request.query.get('hours', 72))
             
             # Build query with node name information - explicit column order
             query = '''
@@ -648,7 +648,7 @@ class DistributedMeshyMcMapfaceServer:
         """Get node information across all agents"""
         try:
             agent_id = request.query.get('agent_id')
-            hours = int(request.query.get('hours', 24))
+            hours = int(request.query.get('hours', 72))
             
             # Build query
             query = '''
@@ -693,7 +693,7 @@ class DistributedMeshyMcMapfaceServer:
     async def get_nodes_detailed(self, request):
         """Get detailed node information with packet history and user info"""
         try:
-            hours = int(request.query.get('hours', 24))
+            hours = int(request.query.get('hours', 72))
             limit = int(request.query.get('limit', 100))
             
             # Get nodes with enhanced user info and recent packet counts
@@ -1238,7 +1238,7 @@ class DistributedMeshyMcMapfaceServer:
                 <select id="hours-filter" onchange="loadNodes()">
                     <option value="1">1 hour</option>
                     <option value="6">6 hours</option>
-                    <option value="24" selected>24 hours</option>
+                    <option value="72" selected>72 hours</option>
                     <option value="168">7 days</option>
                 </select>
                 
@@ -1670,7 +1670,7 @@ class DistributedMeshyMcMapfaceServer:
                 <select id="hours-filter" onchange="loadPackets()">
                     <option value="1">Last 1 hour</option>
                     <option value="6">Last 6 hours</option>
-                    <option value="24" selected>Last 24 hours</option>
+                    <option value="72" selected>Last 72 hours</option>
                     <option value="168">Last 7 days</option>
                 </select>
                 
