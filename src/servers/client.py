@@ -94,7 +94,10 @@ class ServerClient:
     async def send_nodedb_data(self, agent_config: AgentConfig, nodes_data: Dict) -> bool:
         """Send extended node database information to the server"""
         try:
+            self.logger.info(f"Sending nodedb data to {self.config.name}: {len(nodes_data)} nodes")
+            
             if not nodes_data:
+                self.logger.debug(f"No nodedb data to send to {self.config.name}")
                 return True  # No data to send is success
             
             payload = {

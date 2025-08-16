@@ -138,9 +138,10 @@ class MultiServerAgent(BaseAgent):
                 # Process queued node updates
                 self.process_node_updates()
                 
-                # Send extended node data periodically (every ~5 minutes)
+                # Send extended node data periodically (every ~2 minutes for testing)
                 nodedb_counter += 1
-                if nodedb_counter >= 60:  # 60 * 5 seconds = 5 minutes
+                if nodedb_counter >= 24:  # 24 * 5 seconds = 2 minutes
+                    self.logger.info("Starting nodedb data collection and sending...")
                     await self.send_nodedb_to_all_servers()
                     nodedb_counter = 0
                 
@@ -200,12 +201,22 @@ class MultiServerAgent(BaseAgent):
     async def send_nodedb_to_all_servers(self):
         """Send extended node data to all servers"""
         try:
+            self.logger.info("Collecting extended node data from Meshtastic interface...")
             # Get extended node data from the Meshtastic interface
             nodes_data = self.get_extended_node_data()
             
+            self.logger.info(f"Collected extended data for {len(nodes_data)} nodes")
+            
             if not nodes_data:
-                self.logger.debug("No extended node data available to send")
+                self.logger.warning("No extended node data available to send")
                 return
+            
+            # Count nodes with actual metrics
+            nodes_with_metrics = sum(1 for node_data in nodes_data.values() 
+                                   if node_data.get('deviceMetrics') and 
+                                   any(v is not None for v in node_data['deviceMetrics'].values()))
+            
+            self.logger.info(f"Found {nodes_with_metrics} nodes with device metrics to send")
             
             # Send to all enabled servers
             results = await self.server_client.send_nodedb_to_all(self.agent_config, nodes_data)
