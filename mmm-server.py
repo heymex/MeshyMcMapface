@@ -229,6 +229,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_post('/api/agent/register', self.register_agent)
         self.app.router.add_post('/api/agent/data', self.receive_agent_data)
         self.app.router.add_post('/api/agent/nodedb', self.receive_nodedb_data)
+        self.app.router.add_post('/api/agent/routes', self.receive_route_data)
         self.app.router.add_get('/api/agents', self.list_agents)
         self.app.router.add_get('/api/agents/{agent_id}/status', self.agent_status)
         self.app.router.add_get('/api/packets', self.get_packets)
@@ -511,6 +512,92 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error receiving nodedb data: {e}")
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def receive_route_data(self, request):
+        """Receive route discovery data from agents"""
+        try:
+            data = await request.json()
+            
+            agent_id = data['agent_id']
+            timestamp = data['timestamp']
+            routes = data.get('routes', [])
+            discovery_type = data.get('discovery_type', 'unknown')
+            
+            # Update agent last seen
+            await self.db.execute('''
+                UPDATE agents SET last_seen = ? WHERE agent_id = ?
+            ''', (timestamp, agent_id))
+            
+            # Process each discovered route
+            for route in routes:
+                discovery_id = route.get('discovery_id')
+                source_node_id = route.get('source_node_id')
+                target_node_id = route.get('target_node_id')
+                route_path = route.get('route_path', [])
+                hop_count = route.get('hop_count', 0)
+                total_time_ms = route.get('total_time_ms')
+                discovery_timestamp = route.get('discovery_timestamp')
+                response_timestamp = route.get('response_timestamp')
+                success = route.get('success', False)
+                channel_index = route.get('channel_index', 0)
+                snr_towards = route.get('snr_towards', [])
+                snr_back = route.get('snr_back', [])
+                route_back = route.get('route_back', [])
+                discovery_method = route.get('discovery_method', discovery_type)
+                
+                # Store the complete route
+                await self.db.execute('''
+                    INSERT OR REPLACE INTO network_routes
+                    (discovery_id, source_node_id, target_node_id, agent_id, route_path,
+                     hop_count, total_time_ms, discovery_timestamp, response_timestamp, success)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    discovery_id, source_node_id, target_node_id, agent_id,
+                    json.dumps(route_path), hop_count, total_time_ms,
+                    discovery_timestamp, response_timestamp, success
+                ))
+                
+                # Store individual route segments for forward path
+                for i in range(len(route_path) - 1):
+                    from_node = route_path[i]
+                    to_node = route_path[i + 1]
+                    snr_value = snr_towards[i] if i < len(snr_towards) else None
+                    
+                    await self.db.execute('''
+                        INSERT OR REPLACE INTO route_segments
+                        (discovery_id, from_node_id, to_node_id, segment_order,
+                         agent_id, timestamp, link_quality)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        discovery_id, from_node, to_node, i,
+                        agent_id, timestamp, snr_value
+                    ))
+                
+                # Store return route segments if available (with separate discovery_id)
+                if route_back:
+                    for i in range(len(route_back) - 1):
+                        from_node = route_back[i]
+                        to_node = route_back[i + 1]
+                        snr_value = snr_back[i] if i < len(snr_back) else None
+                        
+                        await self.db.execute('''
+                            INSERT OR REPLACE INTO route_segments
+                            (discovery_id, from_node_id, to_node_id, segment_order,
+                             agent_id, timestamp, link_quality)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            f"{discovery_id}_back", from_node, to_node, i,
+                            agent_id, timestamp, snr_value
+                        ))
+            
+            await self.db.commit()
+            
+            self.logger.info(f"Stored {len(routes)} routes from {agent_id} using {discovery_type}")
+            return web.json_response({'status': 'success', 'routes_stored': len(routes)})
+            
+        except Exception as e:
+            self.logger.error(f"Error receiving route data: {e}")
             return web.json_response({'error': str(e)}, status=400)
     
     async def list_agents(self, request):

@@ -130,6 +130,46 @@ class ServerClient:
             self.logger.error(f"Error sending nodedb data to {self.config.name}: {e}")
             raise ServerConnectionError(f"Nodedb send failed for {self.config.name}: {e}")
     
+    async def send_route_data(self, agent_config: AgentConfig, route_results: List[Dict]) -> bool:
+        """Send route discovery data to the server"""
+        try:
+            self.logger.info(f"Sending route data to {self.config.name}: {len(route_results)} routes")
+            
+            if not route_results:
+                self.logger.debug(f"No route data to send to {self.config.name}")
+                return True  # No data to send is success
+            
+            payload = {
+                'agent_id': agent_config.id,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'routes': route_results,
+                'discovery_type': 'traceroute'
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': self.config.api_key
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.config.url}/api/agent/routes",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+                ) as response:
+                    if response.status == 200:
+                        self.logger.info(f"Successfully sent route data for {len(route_results)} routes to {self.config.name}")
+                        return True
+                    else:
+                        response_text = await response.text()
+                        self.logger.error(f"Server {self.config.name} returned status {response.status} for routes: {response_text}")
+                        return False
+                        
+        except Exception as e:
+            self.logger.error(f"Error sending route data to {self.config.name}: {e}")
+            raise ServerConnectionError(f"Route data send failed for {self.config.name}: {e}")
+    
     async def health_check(self) -> bool:
         """Perform a health check against the server"""
         try:
@@ -250,6 +290,41 @@ class MultiServerClient:
                 server_name = server_names[i]
                 if isinstance(result, Exception):
                     self.logger.error(f"Nodedb send failed for {server_name}: {result}")
+                    results[server_name] = False
+                else:
+                    results[server_name] = result
+        
+        return results
+    
+    async def send_routes_to_all(self, agent_config: AgentConfig, route_results: List[Dict]) -> Dict[str, bool]:
+        """Send route data to all enabled servers"""
+        results = {}
+        
+        if not route_results:
+            # No data to send, return success for all enabled servers
+            for name, server_client in self.servers.items():
+                if server_client.config.enabled:
+                    results[name] = True
+            return results
+        
+        # Create tasks for all enabled servers
+        tasks = []
+        server_names = []
+        
+        for name, server_client in self.servers.items():
+            if server_client.config.enabled:
+                task = server_client.send_route_data(agent_config, route_results)
+                tasks.append(task)
+                server_names.append(name)
+        
+        # Execute all sends in parallel
+        if tasks:
+            send_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for i, result in enumerate(send_results):
+                server_name = server_names[i]
+                if isinstance(result, Exception):
+                    self.logger.error(f"Route data send failed for {server_name}: {result}")
                     results[server_name] = False
                 else:
                     results[server_name] = result

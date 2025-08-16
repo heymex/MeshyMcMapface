@@ -2,7 +2,7 @@
 Multi-server agent implementation for MeshyMcMapface
 """
 import asyncio
-from typing import Dict
+from typing import Dict, List
 
 from .base_agent import BaseAgent
 from ..core.database import PacketRepository, NodeRepository, ServerHealthRepository
@@ -130,6 +130,15 @@ class MultiServerAgent(BaseAgent):
         # Start server reporting tasks
         self.start_server_tasks()
         
+        # Start route discovery if enabled
+        route_config = self.get_route_discovery_config()
+        route_discovery_task = None
+        if route_config.get('enabled', True):
+            route_discovery_task = asyncio.create_task(
+                self.periodic_route_discovery(route_config.get('interval_minutes', 60))
+            )
+            self.logger.info(f"Started periodic route discovery with {route_config.get('interval_minutes', 60)} minute intervals")
+        
         # Main processing loop
         try:
             cleanup_counter = 0
@@ -234,6 +243,32 @@ class MultiServerAgent(BaseAgent):
             
         except Exception as e:
             self.logger.error(f"Error sending nodedb to servers: {e}")
+
+    async def send_route_data_to_server(self, route_results: List[Dict]):
+        """Send discovered route data to all servers"""
+        if not route_results:
+            return
+        
+        self.logger.info(f"Sending {len(route_results)} routes to servers")
+        
+        try:
+            # Send route data to all enabled servers
+            results = await self.server_client.send_routes_to_all(self.agent_config, route_results)
+            
+            # Record results in health monitor
+            for server_name, success in results.items():
+                if success:
+                    self.health_monitor.record_success(server_name)
+                    self.logger.debug(f"Successfully sent routes to {server_name}")
+                else:
+                    self.health_monitor.record_failure(server_name)
+                    self.logger.warning(f"Failed to send routes to {server_name}")
+            
+            successful_sends = sum(1 for success in results.values() if success)
+            self.logger.info(f"Successfully sent routes to {successful_sends}/{len(results)} servers")
+            
+        except Exception as e:
+            self.logger.error(f"Error sending route data to servers: {e}")
 
     async def force_send_to_all_servers(self):
         """Force sending queued data to all servers (useful for testing)"""

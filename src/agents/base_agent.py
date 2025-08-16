@@ -4,7 +4,7 @@ Base agent class for MeshyMcMapface
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from ..core.config import ConfigManager, AgentConfig, MeshtasticConfig
 from ..core.database import DatabaseConnection
@@ -31,6 +31,7 @@ class BaseAgent(ABC, LoggerMixin):
         self.connection_manager: Optional[ConnectionManager] = None
         self.packet_processor: Optional[PacketProcessor] = None
         self.node_tracker: Optional[NodeTracker] = None
+        self.traceroute_manager = None
         
         self._initialize_components()
     
@@ -74,6 +75,9 @@ class BaseAgent(ABC, LoggerMixin):
                     on_connection_callback=self.on_connection,
                     on_node_updated_callback=self.on_node_updated
                 )
+                
+                # Initialize traceroute manager
+                self._initialize_traceroute_manager()
                 
                 self.logger.info("Successfully connected to Meshtastic device")
                 return True
@@ -122,6 +126,11 @@ class BaseAgent(ABC, LoggerMixin):
         """Handle a processed packet - must be implemented by subclasses"""
         pass
     
+    @abstractmethod
+    async def send_route_data_to_server(self, route_results: List[Dict]):
+        """Send discovered route data to server(s) - must be implemented by subclasses"""
+        pass
+    
     def _handle_connection_established(self):
         """Handle connection establishment - can be overridden by subclasses"""
         pass
@@ -129,6 +138,138 @@ class BaseAgent(ABC, LoggerMixin):
     def _handle_node_updated(self, node):
         """Handle node updates - can be overridden by subclasses"""
         pass
+    
+    def _initialize_traceroute_manager(self):
+        """Initialize the traceroute manager"""
+        try:
+            # Import here to avoid circular imports
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            from meshtastic_traceroute_integration import MeshtasticTracerouteManager
+            
+            connection = self.connection_manager.get_connection()
+            if connection and connection.interface:
+                self.traceroute_manager = MeshtasticTracerouteManager(
+                    connection.interface,
+                    self.agent_config.id,
+                    self.logger
+                )
+                self.logger.info("Traceroute manager initialized")
+            else:
+                self.logger.warning("Could not initialize traceroute manager - no interface available")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize traceroute manager: {e}")
+    
+    async def discover_network_routes(self, hop_limit: int = 7, delay_between_traces: float = 3.0) -> List[Dict]:
+        """Discover routes to all known nodes using traceroute"""
+        if not self.traceroute_manager:
+            self.logger.warning("Traceroute manager not initialized")
+            return []
+        
+        # Get all known nodes
+        known_nodes = self._get_known_nodes_for_traceroute()
+        if not known_nodes:
+            self.logger.info("No known nodes found for traceroute")
+            return []
+        
+        self.logger.info(f"Starting route discovery for {len(known_nodes)} nodes")
+        
+        # Perform traceroutes to all nodes
+        try:
+            results = await self.traceroute_manager.discover_all_routes(
+                known_nodes,
+                hop_limit=hop_limit,
+                channel_index=0,
+                delay_between_traces=delay_between_traces
+            )
+            
+            self.logger.info(f"Route discovery completed: {len(results)} successful routes")
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error during route discovery: {e}")
+            return []
+    
+    def _get_known_nodes_for_traceroute(self) -> List[str]:
+        """Get list of known node IDs for traceroute (excluding our own node)"""
+        nodes = []
+        try:
+            connection = self.connection_manager.get_connection()
+            if not connection or not connection.interface:
+                return nodes
+                
+            interface = connection.interface
+            if hasattr(interface, 'nodesByNum') and interface.nodesByNum:
+                local_node_id = self._get_local_node_id()
+                for node_num in interface.nodesByNum.keys():
+                    node_id = f"!{node_num:08x}"
+                    # Skip our own node
+                    if node_id != local_node_id:
+                        nodes.append(node_id)
+        except Exception as e:
+            self.logger.error(f"Error getting known nodes for traceroute: {e}")
+        
+        return nodes
+    
+    def _get_local_node_id(self) -> str:
+        """Get the local node ID"""
+        try:
+            connection = self.connection_manager.get_connection()
+            if connection and connection.interface:
+                interface = connection.interface
+                if hasattr(interface, 'myInfo') and interface.myInfo:
+                    return f"!{interface.myInfo.my_node_num:08x}"
+        except Exception as e:
+            self.logger.debug(f"Error getting local node ID: {e}")
+        return "!00000000"  # Fallback
+    
+    async def periodic_route_discovery(self, interval_minutes: int = 60):
+        """Periodically discover routes and send to server"""
+        self.logger.info(f"Starting periodic route discovery with {interval_minutes} minute intervals")
+        
+        while self.running:
+            try:
+                self.logger.info("Starting periodic route discovery cycle")
+                
+                # Discover routes
+                route_results = await self.discover_network_routes()
+                
+                # Send to server
+                if route_results:
+                    await self.send_route_data_to_server(route_results)
+                    self.logger.info(f"Sent {len(route_results)} routes to server")
+                else:
+                    self.logger.info("No routes discovered this cycle")
+                
+            except Exception as e:
+                self.logger.error(f"Error in periodic route discovery: {e}")
+            
+            # Wait for next cycle
+            self.logger.debug(f"Sleeping for {interval_minutes} minutes until next route discovery")
+            
+            # Sleep in small increments to allow for clean shutdown
+            sleep_seconds = interval_minutes * 60
+            for _ in range(int(sleep_seconds)):
+                if not self.running:
+                    break
+                await asyncio.sleep(1)
+    
+    def get_route_discovery_config(self) -> Dict:
+        """Get route discovery configuration from agent config"""
+        # Default configuration
+        config = {
+            'enabled': True,
+            'interval_minutes': 60,
+            'hop_limit': 7,
+            'delay_between_traces': 3.0
+        }
+        
+        # Override with agent-specific config if available
+        if hasattr(self.agent_config, 'route_discovery'):
+            config.update(self.agent_config.route_discovery)
+        
+        return config
     
     async def cleanup_old_data(self):
         """Clean up old data - can be overridden by subclasses"""
