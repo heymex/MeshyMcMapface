@@ -54,13 +54,13 @@ def test_modular_agent_nodedb():
                         print(f"  Name: {user.get('longName')} ({user.get('shortName')})")
                     
                     device_metrics = node_data.get('deviceMetrics', {})
-                    if any(device_metrics.values()):
-                        print(f"  Device Metrics:")
+                    print(f"  Device Metrics (raw): {device_metrics}")
+                    if device_metrics and any(v is not None for v in device_metrics.values()):
+                        print(f"  Device Metrics (processed):")
                         for key, value in device_metrics.items():
-                            if value is not None:
-                                print(f"    {key}: {value}")
+                            print(f"    {key}: {value}")
                     else:
-                        print(f"  Device Metrics: All None/empty")
+                        print(f"  Device Metrics: All None/empty or missing")
                     
                     # Check other fields
                     if node_data.get('hopsAway') is not None:
