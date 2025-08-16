@@ -163,44 +163,89 @@ class BaseAgent(ABC, LoggerMixin):
                         'deviceMetrics': {}
                     }
                     
-                    # Extract user information
-                    if hasattr(node, 'user') and node.user:
-                        user = node.user
-                        node_data['user'] = {
-                            'id': getattr(user, 'id', '') or node_id,
-                            'longName': getattr(user, 'longName', ''),
-                            'shortName': getattr(user, 'shortName', ''),
-                            'macaddr': getattr(user, 'macaddr', ''),
-                            'hwModel': getattr(user, 'hwModel', 0),
-                            'role': getattr(user, 'role', 0),
-                            'isLicensed': getattr(user, 'isLicensed', False)
-                        }
-                    
-                    # Extract position information
-                    if hasattr(node, 'position') and node.position:
-                        pos = node.position
-                        node_data['position'] = {
-                            'latitude': getattr(pos, 'latitude', 0),
-                            'longitude': getattr(pos, 'longitude', 0),
-                            'altitude': getattr(pos, 'altitude', 0),
-                            'time': getattr(pos, 'time', 0)
-                        }
-                    
-                    # Extract device metrics
-                    if hasattr(node, 'deviceMetrics') and node.deviceMetrics:
-                        metrics = node.deviceMetrics
-                        node_data['deviceMetrics'] = {
-                            'batteryLevel': getattr(metrics, 'batteryLevel', None),
-                            'voltage': getattr(metrics, 'voltage', None),
-                            'channelUtilization': getattr(metrics, 'channelUtilization', None),
-                            'airUtilTx': getattr(metrics, 'airUtilTx', None),
-                            'uptimeSeconds': getattr(metrics, 'uptimeSeconds', None)
-                        }
-                    
-                    # Add other node-level fields
-                    node_data['hopsAway'] = getattr(node, 'hopsAway', None)
-                    node_data['lastHeard'] = getattr(node, 'lastHeard', None)
-                    node_data['isFavorite'] = getattr(node, 'isFavorite', False)
+                    # Handle both dict and object formats
+                    if isinstance(node, dict):
+                        # Node is a dictionary
+                        user_data = node.get('user', {})
+                        position_data = node.get('position', {})
+                        device_metrics = node.get('deviceMetrics', {})
+                        
+                        # Extract user information
+                        if user_data:
+                            node_data['user'] = {
+                                'id': user_data.get('id', '') or node_id,
+                                'longName': user_data.get('longName', ''),
+                                'shortName': user_data.get('shortName', ''),
+                                'macaddr': user_data.get('macaddr', ''),
+                                'hwModel': user_data.get('hwModel', 0),
+                                'role': user_data.get('role', 0),
+                                'isLicensed': user_data.get('isLicensed', False)
+                            }
+                        
+                        # Extract position information
+                        if position_data:
+                            node_data['position'] = {
+                                'latitude': position_data.get('latitude', 0),
+                                'longitude': position_data.get('longitude', 0),
+                                'altitude': position_data.get('altitude', 0),
+                                'time': position_data.get('time', 0)
+                            }
+                        
+                        # Extract device metrics
+                        if device_metrics:
+                            node_data['deviceMetrics'] = {
+                                'batteryLevel': device_metrics.get('batteryLevel'),
+                                'voltage': device_metrics.get('voltage'),
+                                'channelUtilization': device_metrics.get('channelUtilization'),
+                                'airUtilTx': device_metrics.get('airUtilTx'),
+                                'uptimeSeconds': device_metrics.get('uptimeSeconds')
+                            }
+                        
+                        # Add other node-level fields
+                        node_data['hopsAway'] = node.get('hopsAway')
+                        node_data['lastHeard'] = node.get('lastHeard')
+                        node_data['isFavorite'] = node.get('isFavorite', False)
+                        
+                    else:
+                        # Node is an object (original code for object format)
+                        # Extract user information
+                        if hasattr(node, 'user') and node.user:
+                            user = node.user
+                            node_data['user'] = {
+                                'id': getattr(user, 'id', '') or node_id,
+                                'longName': getattr(user, 'longName', ''),
+                                'shortName': getattr(user, 'shortName', ''),
+                                'macaddr': getattr(user, 'macaddr', ''),
+                                'hwModel': getattr(user, 'hwModel', 0),
+                                'role': getattr(user, 'role', 0),
+                                'isLicensed': getattr(user, 'isLicensed', False)
+                            }
+                        
+                        # Extract position information
+                        if hasattr(node, 'position') and node.position:
+                            pos = node.position
+                            node_data['position'] = {
+                                'latitude': getattr(pos, 'latitude', 0),
+                                'longitude': getattr(pos, 'longitude', 0),
+                                'altitude': getattr(pos, 'altitude', 0),
+                                'time': getattr(pos, 'time', 0)
+                            }
+                        
+                        # Extract device metrics
+                        if hasattr(node, 'deviceMetrics') and node.deviceMetrics:
+                            metrics = node.deviceMetrics
+                            node_data['deviceMetrics'] = {
+                                'batteryLevel': getattr(metrics, 'batteryLevel', None),
+                                'voltage': getattr(metrics, 'voltage', None),
+                                'channelUtilization': getattr(metrics, 'channelUtilization', None),
+                                'airUtilTx': getattr(metrics, 'airUtilTx', None),
+                                'uptimeSeconds': getattr(metrics, 'uptimeSeconds', None)
+                            }
+                        
+                        # Add other node-level fields
+                        node_data['hopsAway'] = getattr(node, 'hopsAway', None)
+                        node_data['lastHeard'] = getattr(node, 'lastHeard', None)
+                        node_data['isFavorite'] = getattr(node, 'isFavorite', False)
                     
                     nodes_data[node_id] = node_data
                     
