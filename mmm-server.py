@@ -134,9 +134,49 @@ class DistributedMeshyMcMapfaceServer:
         ''')
         
         # Create indexes for performance
+        # Network topology tables for mesh network mapping
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS node_topology (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                hops_away INTEGER,
+                snr REAL,
+                rssi INTEGER,
+                last_heard INTEGER,
+                timestamp TEXT NOT NULL,
+                UNIQUE(node_id, agent_id) ON CONFLICT REPLACE
+            )
+        ''')
+        
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS direct_connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_node_id TEXT NOT NULL,
+                to_node_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                snr REAL,
+                rssi INTEGER,
+                link_quality REAL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                packet_count INTEGER DEFAULT 1,
+                UNIQUE(from_node_id, to_node_id, agent_id) ON CONFLICT REPLACE
+            )
+        ''')
+
+        # Create indexes for performance
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_timestamp ON packets(timestamp)')
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_agent ON packets(agent_id)')
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(agent_id)')
+        
+        # Topology table indexes
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_topology_node_agent ON node_topology(node_id, agent_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_topology_agent ON node_topology(agent_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_topology_timestamp ON node_topology(timestamp)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_connections_from_to ON direct_connections(from_node_id, to_node_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_connections_agent ON direct_connections(agent_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_connections_last_seen ON direct_connections(last_seen)')
         
         await self.db.commit()
         self.logger.info("Database initialized")
@@ -152,6 +192,8 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/packets', self.get_packets)
         self.app.router.add_get('/api/nodes', self.get_nodes)
         self.app.router.add_get('/api/nodes/detailed', self.get_nodes_detailed)
+        self.app.router.add_get('/api/topology', self.get_topology)
+        self.app.router.add_get('/api/connections', self.get_connections)
         self.app.router.add_get('/api/stats', self.get_stats)
         self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
         self.app.router.add_get('/api/debug/nodes', self.debug_nodes)  # Debug nodes
@@ -246,6 +288,43 @@ class DistributedMeshyMcMapfaceServer:
                     packet.get('rssi'), packet.get('snr'), packet.get('hop_limit'),
                     packet.get('want_ack')
                 ))
+                
+                # Detect direct connections based on signal strength
+                from_node = packet.get('from_node')
+                to_node = packet.get('to_node')
+                rssi = packet.get('rssi')
+                snr = packet.get('snr')
+                
+                # Only process if we have signal data and valid nodes
+                if (from_node and to_node and from_node != to_node and 
+                    from_node not in ['^all', '^local'] and to_node not in ['^all', '^local'] and
+                    (rssi is not None or snr is not None)):
+                    
+                    # Calculate link quality (higher SNR = better quality)
+                    link_quality = None
+                    if snr is not None:
+                        # Simple quality metric: SNR > 10 = excellent, > 0 = good, < -10 = poor
+                        if snr > 10:
+                            link_quality = 1.0
+                        elif snr > 0:
+                            link_quality = 0.8
+                        elif snr > -10:
+                            link_quality = 0.5
+                        else:
+                            link_quality = 0.2
+                    
+                    # Store direct connection (bidirectional - from -> to)
+                    await self.db.execute('''
+                        INSERT INTO direct_connections 
+                        (from_node_id, to_node_id, agent_id, snr, rssi, link_quality, first_seen, last_seen, packet_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        ON CONFLICT(from_node_id, to_node_id, agent_id) DO UPDATE SET
+                            snr = COALESCE(excluded.snr, snr),
+                            rssi = COALESCE(excluded.rssi, rssi),
+                            link_quality = COALESCE(excluded.link_quality, link_quality),
+                            last_seen = excluded.last_seen,
+                            packet_count = packet_count + 1
+                    ''', (from_node, to_node, agent_id, snr, rssi, link_quality, packet['timestamp'], packet['timestamp']))
                 
                 # Handle user_info packets to store names
                 if packet.get('type') == 'user_info' and packet.get('payload'):
@@ -364,9 +443,27 @@ class DistributedMeshyMcMapfaceServer:
                         None, node_info.get('snr'), timestamp
                     ))
             
+            # Store topology data in new topology tables
+            for node_id, node_info in nodes_data.items():
+                # Store per-agent topology data
+                await self.db.execute('''
+                    INSERT OR REPLACE INTO node_topology
+                    (node_id, agent_id, hops_away, snr, rssi, last_heard, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    node_id,
+                    agent_id,
+                    node_info.get('hopsAway'),
+                    node_info.get('snr'),
+                    None,  # rssi not available in nodedb data
+                    node_info.get('lastHeard'),
+                    timestamp
+                ))
+            
             await self.db.commit()
             
             self.logger.info(f"Updated nodedb data for {len(nodes_data)} nodes from {agent_id}")
+            self.logger.info(f"Stored topology data for {len(nodes_data)} node-agent relationships")
             return web.json_response({'status': 'success', 'updated': len(nodes_data)})
             
         except Exception as e:
@@ -854,6 +951,120 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error getting stats: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_topology(self, request):
+        """Get network topology data showing hops from each agent to each node"""
+        try:
+            agent_id = request.query.get('agent_id')
+            hours = int(request.query.get('hours', 24))
+            
+            query = '''
+                SELECT nt.node_id, nt.agent_id, nt.hops_away, nt.snr, nt.rssi,
+                       nt.last_heard, nt.timestamp,
+                       u.short_name, u.long_name, u.hw_model,
+                       a.location_name as agent_location
+                FROM node_topology nt
+                LEFT JOIN user_info u ON nt.node_id = u.node_id
+                LEFT JOIN agents a ON nt.agent_id = a.agent_id
+                WHERE datetime(nt.timestamp) > datetime('now', '-{} hours')
+            '''.format(hours)
+            
+            params = []
+            if agent_id and agent_id != 'all':
+                query += ' AND nt.agent_id = ?'
+                params.append(agent_id)
+            
+            query += ' ORDER BY nt.node_id, nt.agent_id'
+            
+            cursor = await self.db.execute(query, params)
+            rows = await cursor.fetchall()
+            
+            # Group by node_id
+            topology = {}
+            for row in rows:
+                node_id = row[0]
+                if node_id not in topology:
+                    topology[node_id] = {
+                        'node_id': node_id,
+                        'short_name': row[7],
+                        'long_name': row[8],
+                        'hw_model': row[9],
+                        'agents': {}
+                    }
+                
+                agent_id = row[1]
+                topology[node_id]['agents'][agent_id] = {
+                    'agent_id': agent_id,
+                    'agent_location': row[10],
+                    'hops_away': row[2],
+                    'snr': row[3],
+                    'rssi': row[4],
+                    'last_heard': row[5],
+                    'timestamp': row[6]
+                }
+            
+            return web.json_response({'topology': list(topology.values())})
+            
+        except Exception as e:
+            self.logger.error(f"Error getting topology: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_connections(self, request):
+        """Get direct connections between nodes for network graph visualization"""
+        try:
+            agent_id = request.query.get('agent_id')
+            hours = int(request.query.get('hours', 24))
+            min_quality = float(request.query.get('min_quality', 0.0))
+            
+            query = '''
+                SELECT dc.from_node_id, dc.to_node_id, dc.agent_id,
+                       dc.snr, dc.rssi, dc.link_quality,
+                       dc.first_seen, dc.last_seen, dc.packet_count,
+                       uf.short_name as from_name, uf.long_name as from_long_name,
+                       ut.short_name as to_name, ut.long_name as to_long_name,
+                       a.location_name as agent_location
+                FROM direct_connections dc
+                LEFT JOIN user_info uf ON dc.from_node_id = uf.node_id
+                LEFT JOIN user_info ut ON dc.to_node_id = ut.node_id
+                LEFT JOIN agents a ON dc.agent_id = a.agent_id
+                WHERE datetime(dc.last_seen) > datetime('now', '-{} hours')
+                  AND (dc.link_quality IS NULL OR dc.link_quality >= ?)
+            '''.format(hours)
+            
+            params = [min_quality]
+            if agent_id and agent_id != 'all':
+                query += ' AND dc.agent_id = ?'
+                params.append(agent_id)
+            
+            query += ' ORDER BY dc.link_quality DESC, dc.packet_count DESC'
+            
+            cursor = await self.db.execute(query, params)
+            rows = await cursor.fetchall()
+            
+            connections = []
+            for row in rows:
+                connections.append({
+                    'from_node_id': row[0],
+                    'to_node_id': row[1],
+                    'agent_id': row[2],
+                    'snr': row[3],
+                    'rssi': row[4],
+                    'link_quality': row[5],
+                    'first_seen': row[6],
+                    'last_seen': row[7],
+                    'packet_count': row[8],
+                    'from_name': row[9],
+                    'from_long_name': row[10],
+                    'to_name': row[11],
+                    'to_long_name': row[12],
+                    'agent_location': row[13]
+                })
+            
+            return web.json_response({'connections': connections})
+            
+        except Exception as e:
+            self.logger.error(f"Error getting connections: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def dashboard(self, request):
