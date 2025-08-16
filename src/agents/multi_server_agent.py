@@ -133,9 +133,16 @@ class MultiServerAgent(BaseAgent):
         # Main processing loop
         try:
             cleanup_counter = 0
+            nodedb_counter = 0
             while self.running:
                 # Process queued node updates
                 self.process_node_updates()
+                
+                # Send extended node data periodically (every ~5 minutes)
+                nodedb_counter += 1
+                if nodedb_counter >= 60:  # 60 * 5 seconds = 5 minutes
+                    await self.send_nodedb_to_all_servers()
+                    nodedb_counter = 0
                 
                 # Periodic cleanup (every ~10 minutes)
                 cleanup_counter += 1
@@ -190,6 +197,33 @@ class MultiServerAgent(BaseAgent):
         """Get a summary of queue status"""
         return self.queue_manager.get_queue_stats()
     
+    async def send_nodedb_to_all_servers(self):
+        """Send extended node data to all servers"""
+        try:
+            # Get extended node data from the Meshtastic interface
+            nodes_data = self.get_extended_node_data()
+            
+            if not nodes_data:
+                self.logger.debug("No extended node data available to send")
+                return
+            
+            # Send to all enabled servers
+            results = await self.server_client.send_nodedb_to_all(self.agent_config, nodes_data)
+            
+            # Record results in health monitor
+            for server_name, success in results.items():
+                if success:
+                    self.health_monitor.record_success(server_name)
+                    self.logger.debug(f"Successfully sent nodedb to {server_name}")
+                else:
+                    self.health_monitor.record_failure(server_name)
+                    self.logger.warning(f"Failed to send nodedb to {server_name}")
+            
+            self.logger.info(f"Sent extended node data for {len(nodes_data)} nodes to {len(results)} servers")
+            
+        except Exception as e:
+            self.logger.error(f"Error sending nodedb to servers: {e}")
+
     async def force_send_to_all_servers(self):
         """Force sending queued data to all servers (useful for testing)"""
         self.logger.info("Force sending data to all servers...")

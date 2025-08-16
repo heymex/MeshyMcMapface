@@ -537,68 +537,166 @@ class MeshyMcMapfaceAgent:
             ''')
             packets = cursor.fetchall()
             
-            if not packets:
-                conn.close()
-                return
-            
             # Get current node status
             cursor = conn.execute('SELECT * FROM node_status')
             nodes = cursor.fetchall()
             conn.close()
             
-            # Prepare payload
-            payload = {
-                'agent_id': self.agent_id,
-                'location': {
-                    'name': self.location_name,
-                    'coordinates': [self.location_lat, self.location_lon]
-                },
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'packets': [json.loads(p[1]) for p in packets],
-                'node_status': [
-                    {
-                        'node_id': n[0],
-                        'last_seen': n[1],
-                        'battery_level': n[2],
-                        'position': [n[3], n[4]] if n[3] and n[4] else None,
-                        'rssi': n[5],
-                        'snr': n[6]
-                    } for n in nodes
-                ]
-            }
+            # Send packets if any
+            if packets:
+                # Prepare payload
+                payload = {
+                    'agent_id': self.agent_id,
+                    'location': {
+                        'name': self.location_name,
+                        'coordinates': [self.location_lat, self.location_lon]
+                    },
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'packets': [json.loads(p[1]) for p in packets],
+                    'node_status': [
+                        {
+                            'node_id': n[0],
+                            'last_seen': n[1],
+                            'battery_level': n[2],
+                            'position': [n[3], n[4]] if n[3] and n[4] else None,
+                            'rssi': n[5],
+                            'snr': n[6]
+                        } for n in nodes
+                    ]
+                }
+                
+                # Send packets to server
+                headers = {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': self.api_key
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.server_url}/api/agent/data",
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        if response.status == 200:
+                            # Mark packets as sent
+                            conn = self.get_db_connection()
+                            packet_ids = [p[0] for p in packets]
+                            placeholders = ','.join('?' * len(packet_ids))
+                            conn.execute(f'''
+                                UPDATE packet_buffer 
+                                SET sent = 1 
+                                WHERE id IN ({placeholders})
+                            ''', packet_ids)
+                            conn.commit()
+                            conn.close()
+                            
+                            self.logger.info(f"Successfully sent {len(packets)} packets to server")
+                        else:
+                            self.logger.error(f"Server returned status {response.status}")
             
-            # Send to server
-            headers = {
-                'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.server_url}/api/agent/data",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        # Mark packets as sent
-                        conn = self.get_db_connection()
-                        packet_ids = [p[0] for p in packets]
-                        placeholders = ','.join('?' * len(packet_ids))
-                        conn.execute(f'''
-                            UPDATE packet_buffer 
-                            SET sent = 1 
-                            WHERE id IN ({placeholders})
-                        ''', packet_ids)
-                        conn.commit()
-                        conn.close()
-                        
-                        self.logger.info(f"Successfully sent {len(packets)} packets to server")
-                    else:
-                        self.logger.error(f"Server returned status {response.status}")
+            # Send extended node data if we have an interface
+            await self.send_nodedb_to_server()
                         
         except Exception as e:
             self.logger.error(f"Error sending data to server: {e}")
+    
+    async def send_nodedb_to_server(self):
+        """Send extended node database information to server"""
+        try:
+            if not self.interface:
+                return
+            
+            # Get node database from Meshtastic interface
+            nodes_data = {}
+            
+            # Get all nodes from the interface
+            if hasattr(self.interface, 'nodes') and self.interface.nodes:
+                for node_num, node in self.interface.nodes.items():
+                    try:
+                        # Convert node number to hex ID format
+                        node_id = f"!{node_num:08x}"
+                        
+                        node_data = {
+                            'user': {},
+                            'position': {},
+                            'deviceMetrics': {}
+                        }
+                        
+                        # Extract user information
+                        if hasattr(node, 'user') and node.user:
+                            user = node.user
+                            node_data['user'] = {
+                                'id': getattr(user, 'id', '') or node_id,
+                                'longName': getattr(user, 'longName', ''),
+                                'shortName': getattr(user, 'shortName', ''),
+                                'macaddr': getattr(user, 'macaddr', ''),
+                                'hwModel': getattr(user, 'hwModel', 0),
+                                'role': getattr(user, 'role', 0),
+                                'isLicensed': getattr(user, 'isLicensed', False)
+                            }
+                        
+                        # Extract position information
+                        if hasattr(node, 'position') and node.position:
+                            pos = node.position
+                            node_data['position'] = {
+                                'latitude': getattr(pos, 'latitude', 0),
+                                'longitude': getattr(pos, 'longitude', 0),
+                                'altitude': getattr(pos, 'altitude', 0),
+                                'time': getattr(pos, 'time', 0)
+                            }
+                        
+                        # Extract device metrics
+                        if hasattr(node, 'deviceMetrics') and node.deviceMetrics:
+                            metrics = node.deviceMetrics
+                            node_data['deviceMetrics'] = {
+                                'batteryLevel': getattr(metrics, 'batteryLevel', None),
+                                'voltage': getattr(metrics, 'voltage', None),
+                                'channelUtilization': getattr(metrics, 'channelUtilization', None),
+                                'airUtilTx': getattr(metrics, 'airUtilTx', None),
+                                'uptimeSeconds': getattr(metrics, 'uptimeSeconds', None)
+                            }
+                        
+                        # Add other node-level fields
+                        node_data['hopsAway'] = getattr(node, 'hopsAway', None)
+                        node_data['lastHeard'] = getattr(node, 'lastHeard', None)
+                        node_data['isFavorite'] = getattr(node, 'isFavorite', False)
+                        
+                        nodes_data[node_id] = node_data
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Error processing node {node_num}: {e}")
+                        continue
+            
+            if nodes_data:
+                # Prepare payload for nodedb endpoint
+                payload = {
+                    'agent_id': self.agent_id,
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'nodes': nodes_data
+                }
+                
+                headers = {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': self.api_key
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.server_url}/api/agent/nodedb",
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as response:
+                        if response.status == 200:
+                            self.logger.info(f"Successfully sent nodedb data for {len(nodes_data)} nodes")
+                        else:
+                            self.logger.error(f"Failed to send nodedb data: {response.status}")
+            else:
+                self.logger.debug("No node data available to send")
+                
+        except Exception as e:
+            self.logger.error(f"Error sending nodedb to server: {e}")
     
     async def cleanup_old_data(self):
         """Clean up old buffered data"""

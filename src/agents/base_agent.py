@@ -139,6 +139,81 @@ class BaseAgent(ABC, LoggerMixin):
         except Exception as e:
             self.logger.error(f"Error during data cleanup: {e}")
     
+    def get_extended_node_data(self) -> Dict:
+        """Get extended node information from Meshtastic interface"""
+        try:
+            connection = self.connection_manager.get_connection()
+            if not connection or not connection.is_connected():
+                return {}
+            
+            interface = connection.interface
+            if not interface or not hasattr(interface, 'nodes') or not interface.nodes:
+                return {}
+            
+            nodes_data = {}
+            
+            for node_num, node in interface.nodes.items():
+                try:
+                    # Convert node number to hex ID format
+                    node_id = f"!{node_num:08x}"
+                    
+                    node_data = {
+                        'user': {},
+                        'position': {},
+                        'deviceMetrics': {}
+                    }
+                    
+                    # Extract user information
+                    if hasattr(node, 'user') and node.user:
+                        user = node.user
+                        node_data['user'] = {
+                            'id': getattr(user, 'id', '') or node_id,
+                            'longName': getattr(user, 'longName', ''),
+                            'shortName': getattr(user, 'shortName', ''),
+                            'macaddr': getattr(user, 'macaddr', ''),
+                            'hwModel': getattr(user, 'hwModel', 0),
+                            'role': getattr(user, 'role', 0),
+                            'isLicensed': getattr(user, 'isLicensed', False)
+                        }
+                    
+                    # Extract position information
+                    if hasattr(node, 'position') and node.position:
+                        pos = node.position
+                        node_data['position'] = {
+                            'latitude': getattr(pos, 'latitude', 0),
+                            'longitude': getattr(pos, 'longitude', 0),
+                            'altitude': getattr(pos, 'altitude', 0),
+                            'time': getattr(pos, 'time', 0)
+                        }
+                    
+                    # Extract device metrics
+                    if hasattr(node, 'deviceMetrics') and node.deviceMetrics:
+                        metrics = node.deviceMetrics
+                        node_data['deviceMetrics'] = {
+                            'batteryLevel': getattr(metrics, 'batteryLevel', None),
+                            'voltage': getattr(metrics, 'voltage', None),
+                            'channelUtilization': getattr(metrics, 'channelUtilization', None),
+                            'airUtilTx': getattr(metrics, 'airUtilTx', None),
+                            'uptimeSeconds': getattr(metrics, 'uptimeSeconds', None)
+                        }
+                    
+                    # Add other node-level fields
+                    node_data['hopsAway'] = getattr(node, 'hopsAway', None)
+                    node_data['lastHeard'] = getattr(node, 'lastHeard', None)
+                    node_data['isFavorite'] = getattr(node, 'isFavorite', False)
+                    
+                    nodes_data[node_id] = node_data
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error processing node {node_num}: {e}")
+                    continue
+            
+            return nodes_data
+            
+        except Exception as e:
+            self.logger.error(f"Error getting extended node data: {e}")
+            return {}
+
     def get_agent_info(self) -> Dict:
         """Get information about this agent"""
         connection = self.connection_manager.get_connection()

@@ -91,6 +91,42 @@ class ServerClient:
             self.logger.error(f"Error sending data to {self.config.name}: {e}")
             raise ServerConnectionError(f"Data send failed for {self.config.name}: {e}")
     
+    async def send_nodedb_data(self, agent_config: AgentConfig, nodes_data: Dict) -> bool:
+        """Send extended node database information to the server"""
+        try:
+            if not nodes_data:
+                return True  # No data to send is success
+            
+            payload = {
+                'agent_id': agent_config.id,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'nodes': nodes_data
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': self.config.api_key
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.config.url}/api/agent/nodedb",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+                ) as response:
+                    if response.status == 200:
+                        self.logger.info(f"Successfully sent nodedb data for {len(nodes_data)} nodes to {self.config.name}")
+                        return True
+                    else:
+                        response_text = await response.text()
+                        self.logger.error(f"Server {self.config.name} returned status {response.status} for nodedb: {response_text}")
+                        return False
+                        
+        except Exception as e:
+            self.logger.error(f"Error sending nodedb data to {self.config.name}: {e}")
+            raise ServerConnectionError(f"Nodedb send failed for {self.config.name}: {e}")
+    
     async def health_check(self) -> bool:
         """Perform a health check against the server"""
         try:
@@ -163,6 +199,59 @@ class MultiServerClient:
         except Exception as e:
             self.logger.error(f"Failed to send to {server_name}: {e}")
             return False
+    
+    async def send_nodedb_to_server(self, server_name: str, agent_config: AgentConfig, nodes_data: Dict) -> bool:
+        """Send extended node data to a specific server"""
+        if server_name not in self.servers:
+            self.logger.error(f"Server {server_name} not configured")
+            return False
+        
+        server_client = self.servers[server_name]
+        
+        if not server_client.config.enabled:
+            self.logger.debug(f"Server {server_name} is disabled, skipping")
+            return True  # Return True to avoid marking as failure
+        
+        try:
+            return await server_client.send_nodedb_data(agent_config, nodes_data)
+        except Exception as e:
+            self.logger.error(f"Failed to send nodedb to {server_name}: {e}")
+            return False
+    
+    async def send_nodedb_to_all(self, agent_config: AgentConfig, nodes_data: Dict) -> Dict[str, bool]:
+        """Send nodedb data to all enabled servers"""
+        results = {}
+        
+        if not nodes_data:
+            # No data to send, return success for all enabled servers
+            for name, server_client in self.servers.items():
+                if server_client.config.enabled:
+                    results[name] = True
+            return results
+        
+        # Create tasks for all enabled servers
+        tasks = []
+        server_names = []
+        
+        for name, server_client in self.servers.items():
+            if server_client.config.enabled:
+                task = server_client.send_nodedb_data(agent_config, nodes_data)
+                tasks.append(task)
+                server_names.append(name)
+        
+        # Execute all sends in parallel
+        if tasks:
+            send_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for i, result in enumerate(send_results):
+                server_name = server_names[i]
+                if isinstance(result, Exception):
+                    self.logger.error(f"Nodedb send failed for {server_name}: {result}")
+                    results[server_name] = False
+                else:
+                    results[server_name] = result
+        
+        return results
     
     async def health_check_all(self) -> Dict[str, bool]:
         """Perform health checks on all enabled servers"""

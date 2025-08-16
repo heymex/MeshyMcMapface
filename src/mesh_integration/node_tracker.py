@@ -19,6 +19,23 @@ class NodeStatus:
         self.rssi: Optional[int] = None
         self.snr: Optional[float] = None
         self.updated_at: Optional[str] = None
+        
+        # Extended metrics
+        self.voltage: Optional[float] = None
+        self.channel_utilization: Optional[float] = None
+        self.air_util_tx: Optional[float] = None
+        self.uptime_seconds: Optional[int] = None
+        self.hops_away: Optional[int] = None
+        self.last_heard: Optional[int] = None
+        
+        # User info
+        self.short_name: Optional[str] = None
+        self.long_name: Optional[str] = None
+        self.macaddr: Optional[str] = None
+        self.hw_model: Optional[str] = None
+        self.role: Optional[str] = None
+        self.is_favorite: bool = False
+        self.is_licensed: bool = False
     
     def to_dict(self) -> Dict:
         """Convert to dictionary representation"""
@@ -30,7 +47,24 @@ class NodeStatus:
             'position_lon': self.position_lon,
             'rssi': self.rssi,
             'snr': self.snr,
-            'updated_at': self.updated_at
+            'updated_at': self.updated_at,
+            
+            # Extended metrics
+            'voltage': self.voltage,
+            'channel_utilization': self.channel_utilization,
+            'air_util_tx': self.air_util_tx,
+            'uptime_seconds': self.uptime_seconds,
+            'hops_away': self.hops_away,
+            'last_heard': self.last_heard,
+            
+            # User info
+            'short_name': self.short_name,
+            'long_name': self.long_name,
+            'macaddr': self.macaddr,
+            'hw_model': self.hw_model,
+            'role': self.role,
+            'is_favorite': self.is_favorite,
+            'is_licensed': self.is_licensed
         }
     
     def update_from_packet(self, packet_data: Dict):
@@ -57,17 +91,51 @@ class NodeStatus:
                     self.position_lat = lat
                     self.position_lon = lon
         
-        # Update battery from telemetry packets
+        # Update battery and extended metrics from telemetry packets
         if packet_data['type'] == 'telemetry' and packet_data.get('payload'):
             payload = packet_data['payload']
             if isinstance(payload, dict):
                 # Handle different telemetry formats
                 if 'device_metrics' in payload:
-                    battery = payload['device_metrics'].get('battery_level')
+                    device_metrics = payload['device_metrics']
+                    
+                    # Basic metrics
+                    battery = device_metrics.get('battery_level')
                     if battery is not None:
                         self.battery_level = battery
+                    
+                    # Extended metrics
+                    voltage = device_metrics.get('voltage')
+                    if voltage is not None:
+                        self.voltage = voltage
+                        
+                    channel_util = device_metrics.get('channel_utilization')
+                    if channel_util is not None:
+                        self.channel_utilization = channel_util
+                        
+                    air_util = device_metrics.get('air_util_tx')
+                    if air_util is not None:
+                        self.air_util_tx = air_util
+                        
+                    uptime = device_metrics.get('uptime_seconds')
+                    if uptime is not None:
+                        self.uptime_seconds = uptime
+                        
                 elif 'battery_level' in payload:
                     self.battery_level = payload['battery_level']
+        
+        # Update user info from user packets
+        if packet_data['type'] == 'user_info' and packet_data.get('payload'):
+            payload = packet_data['payload']
+            if isinstance(payload, dict):
+                if payload.get('short_name'):
+                    self.short_name = payload['short_name']
+                if payload.get('long_name'):
+                    self.long_name = payload['long_name']
+                if payload.get('id'):
+                    self.macaddr = payload['id']
+                if payload.get('hw_model') is not None:
+                    self.hw_model = str(payload['hw_model'])
     
     def merge_with(self, other_status: Dict):
         """Merge with another status dict, preserving existing non-None values"""
