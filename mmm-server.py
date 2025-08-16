@@ -164,6 +164,39 @@ class DistributedMeshyMcMapfaceServer:
                 UNIQUE(from_node_id, to_node_id, agent_id) ON CONFLICT REPLACE
             )
         ''')
+        
+        # Network routes table for complete discovered routes  
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS network_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discovery_id TEXT NOT NULL,
+                source_node_id TEXT NOT NULL,
+                target_node_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                route_path TEXT NOT NULL,  -- JSON array of node IDs
+                hop_count INTEGER NOT NULL,
+                total_time_ms INTEGER,     -- Round-trip time
+                discovery_timestamp TEXT NOT NULL,
+                response_timestamp TEXT,
+                success BOOLEAN DEFAULT FALSE,
+                UNIQUE(discovery_id, agent_id) ON CONFLICT REPLACE
+            )
+        ''')
+        
+        # Route segments table for individual links in discovered routes
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS route_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discovery_id TEXT NOT NULL,
+                from_node_id TEXT NOT NULL,
+                to_node_id TEXT NOT NULL,
+                segment_order INTEGER NOT NULL,  -- Position in the route (0, 1, 2...)
+                agent_id TEXT NOT NULL,
+                link_quality REAL,
+                timestamp TEXT NOT NULL,
+                UNIQUE(discovery_id, segment_order, agent_id) ON CONFLICT REPLACE
+            )
+        ''')
 
         # Create indexes for performance
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_packets_timestamp ON packets(timestamp)')
@@ -177,6 +210,15 @@ class DistributedMeshyMcMapfaceServer:
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_connections_from_to ON direct_connections(from_node_id, to_node_id)')
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_connections_agent ON direct_connections(agent_id)')
         await self.db.execute('CREATE INDEX IF NOT EXISTS idx_connections_last_seen ON direct_connections(last_seen)')
+        
+        # Route table indexes
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_routes_discovery_id ON network_routes(discovery_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_routes_source_target ON network_routes(source_node_id, target_node_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_routes_agent ON network_routes(agent_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_routes_timestamp ON network_routes(discovery_timestamp)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_segments_discovery_id ON route_segments(discovery_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_segments_from_to ON route_segments(from_node_id, to_node_id)')
+        await self.db.execute('CREATE INDEX IF NOT EXISTS idx_segments_order ON route_segments(discovery_id, segment_order)')
         
         await self.db.commit()
         self.logger.info("Database initialized")
@@ -194,6 +236,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/nodes/detailed', self.get_nodes_detailed)
         self.app.router.add_get('/api/topology', self.get_topology)
         self.app.router.add_get('/api/connections', self.get_connections)
+        self.app.router.add_get('/api/routes', self.get_routes)
         self.app.router.add_get('/api/stats', self.get_stats)
         self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
         self.app.router.add_get('/api/debug/nodes', self.debug_nodes)  # Debug nodes
@@ -1065,6 +1108,86 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error getting connections: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_routes(self, request):
+        """Get discovered network routes for graph analysis"""
+        try:
+            agent_id = request.query.get('agent_id')
+            source_node = request.query.get('source_node')
+            target_node = request.query.get('target_node')
+            hours = int(request.query.get('hours', 24))
+            successful_only = request.query.get('successful_only', 'true').lower() == 'true'
+            
+            query = '''
+                SELECT nr.discovery_id, nr.source_node_id, nr.target_node_id, 
+                       nr.agent_id, nr.route_path, nr.hop_count,
+                       nr.total_time_ms, nr.discovery_timestamp, nr.response_timestamp,
+                       nr.success,
+                       us.short_name as source_name, us.long_name as source_long_name,
+                       ut.short_name as target_name, ut.long_name as target_long_name,
+                       a.location_name as agent_location
+                FROM network_routes nr
+                LEFT JOIN user_info us ON nr.source_node_id = us.node_id
+                LEFT JOIN user_info ut ON nr.target_node_id = ut.node_id
+                LEFT JOIN agents a ON nr.agent_id = a.agent_id
+                WHERE datetime(nr.discovery_timestamp) > datetime('now', '-{} hours')
+            '''.format(hours)
+            
+            params = []
+            
+            if successful_only:
+                query += ' AND nr.success = 1'
+            
+            if agent_id and agent_id != 'all':
+                query += ' AND nr.agent_id = ?'
+                params.append(agent_id)
+                
+            if source_node:
+                query += ' AND nr.source_node_id = ?'
+                params.append(source_node)
+                
+            if target_node:
+                query += ' AND nr.target_node_id = ?'
+                params.append(target_node)
+            
+            query += ' ORDER BY nr.discovery_timestamp DESC, nr.hop_count ASC'
+            
+            cursor = await self.db.execute(query, params)
+            rows = await cursor.fetchall()
+            
+            routes = []
+            for row in rows:
+                # Parse the JSON route path
+                route_path = []
+                try:
+                    import json
+                    route_path = json.loads(row[4]) if row[4] else []
+                except:
+                    route_path = []
+                
+                routes.append({
+                    'discovery_id': row[0],
+                    'source_node_id': row[1],
+                    'target_node_id': row[2],
+                    'agent_id': row[3],
+                    'route_path': route_path,
+                    'hop_count': row[5],
+                    'total_time_ms': row[6],
+                    'discovery_timestamp': row[7],
+                    'response_timestamp': row[8],
+                    'success': bool(row[9]),
+                    'source_name': row[10],
+                    'source_long_name': row[11],
+                    'target_name': row[12],
+                    'target_long_name': row[13],
+                    'agent_location': row[14]
+                })
+            
+            return web.json_response({'routes': routes})
+            
+        except Exception as e:
+            self.logger.error(f"Error getting routes: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def dashboard(self, request):
