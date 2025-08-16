@@ -20,7 +20,13 @@ def test_base_agent_nodedb():
         
         # For testing, we'll use the single agent instead since it's simpler
         sys.path.insert(0, str(Path(__file__).parent))
-        from mmm_single_agent import MeshyMcMapfaceAgent
+        
+        # Import the single agent module
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("mmm_single_agent", "mmm-single-agent.py")
+        mmm_single_agent = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mmm_single_agent)
+        MeshyMcMapfaceAgent = mmm_single_agent.MeshyMcMapfaceAgent
         
         print("Looking for agent config file...")
         config_files = list(Path('.').glob('*agent*.ini'))
