@@ -611,8 +611,8 @@ class MeshyMcMapfaceAgent:
             nodes_data = {}
             
             # Get all nodes from the interface
-            if hasattr(self.interface, 'nodes') and self.interface.nodes:
-                for node_num, node in self.interface.nodes.items():
+            if hasattr(self.interface, 'nodesByNum') and self.interface.nodesByNum:
+                for node_num, node in self.interface.nodesByNum.items():
                     try:
                         # Convert node number to hex ID format
                         node_id = f"!{node_num:08x}"

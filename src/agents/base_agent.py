@@ -147,12 +147,12 @@ class BaseAgent(ABC, LoggerMixin):
                 return {}
             
             interface = connection.interface
-            if not interface or not hasattr(interface, 'nodes') or not interface.nodes:
+            if not interface or not hasattr(interface, 'nodesByNum') or not interface.nodesByNum:
                 return {}
             
             nodes_data = {}
             
-            for node_num, node in interface.nodes.items():
+            for node_num, node in interface.nodesByNum.items():
                 try:
                     # Convert node number to hex ID format
                     node_id = f"!{node_num:08x}"
