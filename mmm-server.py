@@ -973,6 +973,67 @@ class DistributedMeshyMcMapfaceServer:
                     'seeing_agents': node[19].split(',') if node[19] else []
                 }
                 
+                # Get route information for each agent that can see this node
+                route_cursor = await self.db.execute('''
+                    SELECT DISTINCT r.agent_id, r.hop_count, r.route_path, r.discovery_timestamp,
+                           a.location_name, a.agent_id as agent_short_id
+                    FROM network_routes r
+                    JOIN agents a ON r.agent_id = a.agent_id
+                    WHERE r.target_node_id = ? AND r.success = 1
+                    AND datetime(r.discovery_timestamp) > datetime('now', '-{} hours')
+                    ORDER BY r.discovery_timestamp DESC
+                '''.format(hours), (node[0],))
+                
+                routes = await route_cursor.fetchall()
+                
+                # Also get topology data (traditional hop count) for comparison
+                topo_cursor = await self.db.execute('''
+                    SELECT nt.agent_id, nt.hops_away, a.location_name, a.agent_id as agent_short_id
+                    FROM node_topology nt
+                    JOIN agents a ON nt.agent_id = a.agent_id
+                    WHERE nt.node_id = ?
+                    AND datetime(nt.timestamp) > datetime('now', '-{} hours')
+                    ORDER BY nt.timestamp DESC
+                '''.format(hours), (node[0],))
+                
+                topology_data = await topo_cursor.fetchall()
+                
+                # Build routing information per agent
+                agent_routes = {}
+                
+                # Add traceroute data
+                for route in routes:
+                    agent_id = route[0]
+                    hop_count = route[1]
+                    route_path = json.loads(route[2]) if route[2] else []
+                    discovery_time = route[3]
+                    location_name = route[4]
+                    agent_short_id = route[5]
+                    
+                    agent_routes[agent_id] = {
+                        'agent_id': agent_short_id,
+                        'location_name': location_name,
+                        'hop_count': hop_count,
+                        'route_path': route_path,
+                        'discovery_timestamp': discovery_time,
+                        'route_type': 'traceroute'
+                    }
+                
+                # Add topology data for agents without traceroute data
+                for topo in topology_data:
+                    agent_id = topo[0]
+                    if agent_id not in agent_routes:
+                        agent_routes[agent_id] = {
+                            'agent_id': topo[3],
+                            'location_name': topo[2],
+                            'hop_count': topo[1],
+                            'route_path': [],
+                            'discovery_timestamp': None,
+                            'route_type': 'topology'
+                        }
+                
+                node_data['agent_routes'] = agent_routes
+                
                 # Get recent packet samples for this node
                 packet_cursor = await self.db.execute('''
                     SELECT p.timestamp, p.type, p.payload, p.rssi, p.snr, 
@@ -2263,6 +2324,11 @@ class DistributedMeshyMcMapfaceServer:
         .stat { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; min-width: 120px; }
         .stat-number { font-size: 1.5em; font-weight: bold; color: #2196F3; }
         .stat-label { color: #666; font-size: 0.9em; }
+        
+        /* Route information styling for popups */
+        .leaflet-popup-content { max-width: 350px !important; }
+        .route-path { font-family: monospace; color: #666; font-size: 0.9em; }
+        .route-discovery-time { color: #888; font-size: 0.8em; }
     </style>
 </head>
 <body>
@@ -2505,15 +2571,40 @@ class DistributedMeshyMcMapfaceServer:
                     nodeTitle = `${node.long_name} (${node.node_id})`;
                 }
                 
+                // Build route information display
+                let routeInfo = '';
+                if (node.agent_routes && Object.keys(node.agent_routes).length > 0) {
+                    routeInfo = '<strong>🛣️ Network Routes:</strong><br>';
+                    for (const [agentId, routeData] of Object.entries(node.agent_routes)) {
+                        const agentName = routeData.location_name || routeData.agent_id;
+                        const hopCount = routeData.hop_count;
+                        
+                        if (routeData.route_type === 'traceroute' && routeData.route_path && routeData.route_path.length > 0) {
+                            // Show full traceroute path
+                            const pathDisplay = routeData.route_path.join(' → ');
+                            const discoveryTime = routeData.discovery_timestamp ? 
+                                new Date(routeData.discovery_timestamp).toLocaleString() : 'Unknown';
+                            routeInfo += `&nbsp;&nbsp;📍 <strong>${agentName}</strong>: ${hopCount} hops<br>`;
+                            routeInfo += `&nbsp;&nbsp;&nbsp;&nbsp;<span class="route-path">${pathDisplay}</span><br>`;
+                            routeInfo += `&nbsp;&nbsp;&nbsp;&nbsp;<span class="route-discovery-time">Discovered: ${discoveryTime}</span><br>`;
+                        } else {
+                            // Show basic hop count
+                            routeInfo += `&nbsp;&nbsp;📍 <strong>${agentName}</strong>: ${hopCount !== null ? hopCount + ' hops' : 'Unknown hops'}<br>`;
+                        }
+                    }
+                } else if (node.hops_away !== null) {
+                    // Fallback to old format if no route data
+                    routeInfo = `<strong>🛣️ Network Hops: ${node.hops_away}</strong><br>`;
+                }
+
                 const popupContent = `
                     <strong>📡 ${nodeTitle}</strong><br>
                     ${node.hw_model ? `Hardware: ${node.hw_model}<br>` : ''}
                     ${node.role ? `Role: ${node.role}<br>` : ''}
-                    Agent: ${node.seeing_agents ? node.seeing_agents.join(', ') : 'Unknown'}<br>
                     Last Seen: ${lastSeen.toLocaleString()}<br>
                     ${node.battery_level ? `Battery: ${node.battery_level}%<br>` : ''}
                     ${node.voltage ? `Voltage: ${node.voltage.toFixed(2)}V<br>` : ''}
-                    ${node.hops_away !== null ? `<strong>🛣️ Network Hops: ${node.hops_away}</strong><br>` : ''}
+                    ${routeInfo}
                     ${node.rssi ? `RSSI: ${node.rssi} dBm<br>` : ''}
                     ${node.snr ? `SNR: ${node.snr} dB` : ''}
                 `;
