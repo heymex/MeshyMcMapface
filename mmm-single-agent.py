@@ -669,6 +669,14 @@ class MeshyMcMapfaceAgent:
                         continue
             
             if nodes_data:
+                # Debug logging
+                self.logger.info(f"Preparing to send nodedb data for {len(nodes_data)} nodes")
+                for node_id, node_data in list(nodes_data.items())[:3]:  # Log first 3 nodes
+                    device_metrics = node_data.get('deviceMetrics', {})
+                    self.logger.info(f"Node {node_id}: battery={device_metrics.get('batteryLevel')}, "
+                                   f"voltage={device_metrics.get('voltage')}, "
+                                   f"channelUtil={device_metrics.get('channelUtilization')}")
+                
                 # Prepare payload for nodedb endpoint
                 payload = {
                     'agent_id': self.agent_id,
@@ -693,6 +701,16 @@ class MeshyMcMapfaceAgent:
                         else:
                             self.logger.error(f"Failed to send nodedb data: {response.status}")
             else:
+                if self.interface:
+                    if hasattr(self.interface, 'nodesByNum'):
+                        if self.interface.nodesByNum:
+                            self.logger.warning(f"Interface has {len(self.interface.nodesByNum)} nodes but failed to extract data")
+                        else:
+                            self.logger.debug("Interface nodesByNum is empty")
+                    else:
+                        self.logger.warning("Interface has no nodesByNum attribute")
+                else:
+                    self.logger.debug("No interface available for nodedb data collection")
                 self.logger.debug("No node data available to send")
                 
         except Exception as e:
