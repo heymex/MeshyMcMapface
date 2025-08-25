@@ -7,7 +7,7 @@ import sqlite3
 import os
 
 def migrate_database():
-    db_path = 'meshymcmapface.db'
+    db_path = 'meshtastic.db'
     
     if not os.path.exists(db_path):
         print(f"Database {db_path} does not exist")
