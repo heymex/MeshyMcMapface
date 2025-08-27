@@ -98,11 +98,11 @@ try:
                             import requests
                             
                             try:
-                                response = requests.post('http://localhost:8082/api/agent/routes', 
+                                response = requests.post('http://10.10.149.23:8082/api/agent/routes', 
                                                        json=payload, timeout=10)
                                 if response.status_code == 200:
                                     print("✅ Successfully sent routes to server!")
-                                    print("🌐 Check http://localhost:8082/api/routes to see the data")
+                                    print("🌐 Check http://10.10.149.23:8082/api/routes to see the data")
                                 else:
                                     print(f"⚠️  Server responded with status {response.status_code}")
                             except Exception as e:
