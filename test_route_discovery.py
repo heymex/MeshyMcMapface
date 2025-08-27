@@ -14,11 +14,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 sys.path.insert(0, os.path.dirname(__file__))
 
 try:
-    # Import the actual traceroute integration directly
-    from meshtastic_traceroute_integration import MeshtasticTracerouteManager
+    # Import the actual traceroute integration directly (absolute import)
+    import meshtastic_traceroute_integration
+    MeshtasticTracerouteManager = meshtastic_traceroute_integration.MeshtasticTracerouteManager
     
     # Try simpler approach - check if we can at least import meshtastic
     import meshtastic
+    import meshtastic.serial_interface
+    import meshtastic.tcp_interface
     
     async def test_simple_route_discovery():
         """Simple test of route discovery functionality"""
@@ -38,14 +41,14 @@ try:
             
             # Method 1: Try serial connection
             try:
-                interface = meshtastic.SerialInterface()
+                interface = meshtastic.serial_interface.SerialInterface()
                 print("✅ Connected via Serial")
             except Exception as e:
                 print(f"⚠️  Serial connection failed: {e}")
                 
                 # Method 2: Try TCP connection
                 try:
-                    interface = meshtastic.TCPInterface()
+                    interface = meshtastic.tcp_interface.TCPInterface()
                     print("✅ Connected via TCP")
                 except Exception as e:
                     print(f"⚠️  TCP connection failed: {e}")
