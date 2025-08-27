@@ -10,78 +10,117 @@ import os
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
+# Also add the project root to handle imports
+sys.path.insert(0, os.path.dirname(__file__))
+
 try:
-    from agents.base_agent import BaseAgent
-    from core.config import ConfigManager
+    # Import the actual traceroute integration directly
+    from meshtastic_traceroute_integration import MeshtasticTracerouteManager
     
-    class TestAgent(BaseAgent):
-        """Test agent to trigger route discovery"""
-        
-        async def _handle_processed_packet(self, packet_data):
-            """Handle processed packets - minimal implementation"""
-            pass
-        
-        async def _handle_connection_established(self):
-            """Handle connection established - minimal implementation"""
-            pass
-        
-        async def _handle_node_updated(self, node):
-            """Handle node updated - minimal implementation"""
-            pass
-        
-        async def send_route_data_to_server(self, route_results):
-            """Send route data to server - minimal implementation"""
-            print(f"📤 Would send {len(route_results)} routes to server:")
-            for route in route_results[:3]:  # Show first 3 routes
-                print(f"  🛣️  {route.get('source_node_id')} → {route.get('target_node_id')} ({route.get('hop_count')} hops)")
+    # Try simpler approach - check if we can at least import meshtastic
+    import meshtastic
     
-    async def test_route_discovery():
-        """Test route discovery functionality"""
-        print("🧪 Testing Route Discovery")
+    async def test_simple_route_discovery():
+        """Simple test of route discovery functionality"""
+        print("🧪 Testing Route Discovery (Simplified)")
         print("=" * 50)
         
-        # Try to create a test agent
         try:
-            config_file = "agent_config.ini"  # Adjust path if needed
+            # Test 1: Can we import and create the traceroute manager?
+            print("📦 Testing imports...")
+            print("✅ Successfully imported meshtastic and traceroute integration")
             
-            if not os.path.exists(config_file):
-                print(f"❌ Config file not found: {config_file}")
-                print("💡 Create a config file or adjust the path")
-                return
-            
-            agent = TestAgent(config_file)
-            
-            # Check if Meshtastic connection works
+            # Test 2: Try to connect to Meshtastic device directly
             print("🔌 Testing Meshtastic connection...")
-            if agent.connect_to_meshtastic():
-                print("✅ Connected to Meshtastic device")
+            
+            # Try different connection methods
+            interface = None
+            
+            # Method 1: Try serial connection
+            try:
+                interface = meshtastic.SerialInterface()
+                print("✅ Connected via Serial")
+            except Exception as e:
+                print(f"⚠️  Serial connection failed: {e}")
                 
-                # Check if traceroute manager initialized
-                if agent.traceroute_manager:
-                    print("✅ Traceroute manager initialized")
+                # Method 2: Try TCP connection
+                try:
+                    interface = meshtastic.TCPInterface()
+                    print("✅ Connected via TCP")
+                except Exception as e:
+                    print(f"⚠️  TCP connection failed: {e}")
+            
+            if interface:
+                print("🎯 Meshtastic interface created successfully")
+                
+                # Test 3: Create traceroute manager
+                traceroute_manager = MeshtasticTracerouteManager(
+                    interface,
+                    "test_agent",
+                    None  # logger
+                )
+                print("✅ Traceroute manager created")
+                
+                # Test 4: Check for known nodes
+                if hasattr(interface, 'nodesByNum') and interface.nodesByNum:
+                    node_count = len(interface.nodesByNum)
+                    print(f"🔍 Found {node_count} known nodes")
                     
-                    # Get known nodes
-                    known_nodes = agent._get_known_nodes_for_traceroute()
-                    print(f"🔍 Found {len(known_nodes)} known nodes")
-                    
-                    if known_nodes:
-                        print("📡 Known nodes:", ', '.join(known_nodes[:5]))
+                    if node_count > 0:
+                        # Show first few nodes
+                        node_ids = [f"!{num:08x}" for num in list(interface.nodesByNum.keys())[:5]]
+                        print(f"📡 Sample nodes: {', '.join(node_ids)}")
                         
-                        # Try route discovery
-                        print("🛣️  Starting route discovery...")
-                        routes = await agent.discover_network_routes()
+                        # Test 5: Try simple route discovery
+                        print("🛣️  Testing route discovery to one node...")
+                        
+                        target_nodes = node_ids[:2]  # Just test 2 nodes
+                        routes = await traceroute_manager.discover_all_routes(target_nodes)
                         
                         if routes:
-                            print(f"✅ Discovered {len(routes)} routes!")
-                            await agent.send_route_data_to_server(routes)
+                            print(f"🎉 SUCCESS! Discovered {len(routes)} routes:")
+                            for route in routes:
+                                path = ' → '.join(route.get('route_path', []))
+                                print(f"  🛣️  {route.get('source_node_id')} to {route.get('target_node_id')}: {path}")
+                                
+                            # Test 6: Try sending to server
+                            print("📤 Testing server submission...")
+                            payload = {
+                                'agent_id': 'test_agent',
+                                'timestamp': 'now',
+                                'routes': routes
+                            }
+                            
+                            import json
+                            import requests
+                            
+                            try:
+                                response = requests.post('http://localhost:8082/api/agent/routes', 
+                                                       json=payload, timeout=10)
+                                if response.status_code == 200:
+                                    print("✅ Successfully sent routes to server!")
+                                    print("🌐 Check http://localhost:8082/api/routes to see the data")
+                                else:
+                                    print(f"⚠️  Server responded with status {response.status_code}")
+                            except Exception as e:
+                                print(f"⚠️  Could not reach server: {e}")
+                                
                         else:
-                            print("⚠️  No routes discovered")
+                            print("⚠️  No routes discovered - this might be normal if traceroute times out")
                     else:
-                        print("⚠️  No known nodes to traceroute to")
+                        print("⚠️  No nodes found in nodesByNum")
                 else:
-                    print("❌ Traceroute manager not initialized")
+                    print("⚠️  No nodesByNum available - device might not be ready")
+                
+                # Clean up
+                try:
+                    interface.close()
+                except:
+                    pass
+                    
             else:
-                print("❌ Could not connect to Meshtastic device")
+                print("❌ Could not establish Meshtastic connection")
+                print("💡 Make sure your Meshtastic device is connected via USB or network")
                 
         except Exception as e:
             print(f"❌ Error during test: {e}")
@@ -89,7 +128,7 @@ try:
             traceback.print_exc()
 
     if __name__ == "__main__":
-        asyncio.run(test_route_discovery())
+        asyncio.run(test_simple_route_discovery())
 
 except ImportError as e:
     print(f"❌ Import error: {e}")
