@@ -1696,6 +1696,27 @@ class DistributedMeshyMcMapfaceServer:
         .filter-controls { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; }
         .filter-controls label { font-weight: bold; }
         .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; }
+        .role-router { background: #f44336; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-router-client { background: #FF9800; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-client { background: #2196F3; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-client-mute { background: #4CAF50; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-repeater { background: #9C27B0; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-tracker { background: #607D8B; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-unknown { background: #9E9E9E; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .sortable { cursor: pointer; user-select: none; position: relative; }
+        .sortable:hover { background: #e3f2fd; }
+        .sortable::after { content: '⇅'; margin-left: 5px; color: #ccc; }
+        .sortable.asc::after { content: '↑'; color: #2196F3; }
+        .sortable.desc::after { content: '↓'; color: #2196F3; }
+        .filter-section { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #ddd; }
+        .filter-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .filter-btn { padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 20px; cursor: pointer; font-size: 0.85em; transition: all 0.2s; }
+        .filter-btn:hover { background: #f0f0f0; }
+        .filter-btn.active { background: #2196F3; color: white; border-color: #2196F3; }
+        .filter-btn.active:hover { background: #1976D2; }
+        .filter-counter { background: #666; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.75em; margin-left: 5px; }
+        .clear-filters { background: #f44336; color: white; border: none; }
+        .clear-filters:hover { background: #d32f2f; }
     </style>
 </head>
 <body>
@@ -1728,19 +1749,55 @@ class DistributedMeshyMcMapfaceServer:
                 <button onclick="loadNodes()" style="background: #4CAF50; color: white; border: none;">Refresh</button>
             </div>
             
+            <div class="filter-section">
+                <strong>🔍 Quick Filters:</strong>
+                <div class="filter-buttons">
+                    <button class="filter-btn" data-filter="all" onclick="toggleFilter('all')">
+                        All Nodes <span class="filter-counter" id="count-all">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="routers" onclick="toggleFilter('routers')">
+                        Routers <span class="filter-counter" id="count-routers">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="routers-no-gps" onclick="toggleFilter('routers-no-gps')">
+                        Routers w/o GPS <span class="filter-counter" id="count-routers-no-gps">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="clients" onclick="toggleFilter('clients')">
+                        Clients <span class="filter-counter" id="count-clients">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="client-mute" onclick="toggleFilter('client-mute')">
+                        Client Mute <span class="filter-counter" id="count-client-mute">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="has-gps" onclick="toggleFilter('has-gps')">
+                        Has GPS <span class="filter-counter" id="count-has-gps">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="high-battery" onclick="toggleFilter('high-battery')">
+                        High Battery (>70%) <span class="filter-counter" id="count-high-battery">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="low-battery" onclick="toggleFilter('low-battery')">
+                        Low Battery (<30%) <span class="filter-counter" id="count-low-battery">0</span>
+                    </button>
+                    <button class="filter-btn clear-filters" onclick="clearAllFilters()">
+                        Clear All
+                    </button>
+                </div>
+            </div>
+            
+            <div id="filter-status" style="margin-bottom: 10px; font-weight: bold; color: #666;"></div>
+            
             <table class="table" id="nodes-table">
                 <thead>
                     <tr>
-                        <th>Node ID</th>
-                        <th>Names</th>
-                        <th>Agents Seeing</th>
-                        <th>Last Seen</th>
-                        <th>Battery</th>
+                        <th class="sortable" data-column="node_id">Node ID</th>
+                        <th class="sortable" data-column="name">Names</th>
+                        <th class="sortable" data-column="role">Role</th>
+                        <th class="sortable" data-column="agent_count">Agents Seeing</th>
+                        <th class="sortable" data-column="updated_at">Last Seen</th>
+                        <th class="sortable" data-column="battery_level">Battery</th>
                         <th>Position</th>
-                        <th>Signal</th>
-                        <th>Hops</th>
-                        <th>Packets (24h)</th>
-                        <th>Status</th>
+                        <th class="sortable" data-column="rssi">Signal</th>
+                        <th class="sortable" data-column="hops_away">Hops</th>
+                        <th class="sortable" data-column="packet_count">Packets (24h)</th>
+                        <th class="sortable" data-column="status">Status</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
@@ -1777,11 +1834,12 @@ class DistributedMeshyMcMapfaceServer:
                 console.log('Nodes array:', data.nodes);
                 console.log('Number of nodes:', data.nodes ? data.nodes.length : 'undefined');
                 
-                currentNodes = data.nodes || [];
-                console.log('currentNodes set to:', currentNodes);
-                console.log('currentNodes length:', currentNodes.length);
+                allNodes = data.nodes || []; // Store original data
+                console.log('allNodes set to:', allNodes);
+                console.log('allNodes length:', allNodes.length);
                 
-                displayNodes();
+                // Apply current filters to the new data
+                applyFilters();
                 
             } catch (error) {
                 console.error('Error loading nodes:', error);
@@ -1803,7 +1861,7 @@ class DistributedMeshyMcMapfaceServer:
             if (currentNodes.length === 0) {
                 console.log('No nodes found, showing empty message');
                 const row = tbody.insertRow();
-                row.innerHTML = '<td colspan="10" style="text-align: center;">No nodes found</td>';
+                row.innerHTML = '<td colspan="11" style="text-align: center;">No nodes found</td>';
                 return;
             }
             
@@ -1852,6 +1910,35 @@ class DistributedMeshyMcMapfaceServer:
                 let agentsDisplay = node.seeing_agents.length > 0 ? 
                     `${node.agent_count} (${node.seeing_agents.join(', ')})` : '-';
                 
+                // Format role with color coding
+                let roleDisplay = '-';
+                if (node.role && node.role !== '' && node.role !== '0') {
+                    let roleClass = 'role-unknown';
+                    let roleName = node.role.toUpperCase();
+                    
+                    if (roleName.includes('ROUTER') && !roleName.includes('CLIENT')) {
+                        roleClass = 'role-router';
+                        roleName = 'ROUTER';
+                    } else if (roleName.includes('ROUTER') && roleName.includes('CLIENT')) {
+                        roleClass = 'role-router-client';  
+                        roleName = 'ROUTER_CLIENT';
+                    } else if (roleName.includes('CLIENT_MUTE') || roleName.includes('CLIENTMUTE')) {
+                        roleClass = 'role-client-mute';
+                        roleName = 'CLIENT_MUTE';
+                    } else if (roleName.includes('CLIENT')) {
+                        roleClass = 'role-client';
+                        roleName = 'CLIENT';
+                    } else if (roleName.includes('REPEATER')) {
+                        roleClass = 'role-repeater';
+                        roleName = 'REPEATER';
+                    } else if (roleName.includes('TRACKER')) {
+                        roleClass = 'role-tracker';
+                        roleName = 'TRACKER';
+                    }
+                    
+                    roleDisplay = `<span class="${roleClass}">${roleName}</span>`;
+                }
+
                 // Format hop count with color coding
                 let hopDisplay = '-';
                 let hopClass = '';
@@ -1866,6 +1953,7 @@ class DistributedMeshyMcMapfaceServer:
                 row.innerHTML = `
                     <td><strong>${node.node_id}</strong></td>
                     <td>${nameDisplay}</td>
+                    <td>${roleDisplay}</td>
                     <td>${agentsDisplay}</td>
                     <td>${lastSeen}</td>
                     <td class="${batteryClass}">${batteryDisplay}</td>
@@ -1884,6 +1972,21 @@ class DistributedMeshyMcMapfaceServer:
                     packetSpan.onclick = () => showPackets(index);
                 }
             });
+            
+            // Setup sorting event listeners (re-attach after each load)
+            setupSorting();
+        }
+        
+        function setupSorting() {
+            document.querySelectorAll('.sortable').forEach(th => {
+                th.removeEventListener('click', handleSortClick); // Remove existing listeners
+                th.addEventListener('click', handleSortClick);
+            });
+        }
+        
+        function handleSortClick() {
+            const column = this.getAttribute('data-column');
+            sortNodes(column);
         }
         
         function showPackets(nodeIndex) {
@@ -2069,6 +2172,232 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
+        // Filtering functionality
+        let activeFilters = new Set(['all']);
+        let allNodes = []; // Keep original unfiltered data
+        
+        function toggleFilter(filterType) {
+            console.log('Toggle filter:', filterType);
+            
+            if (filterType === 'all') {
+                // "All" is exclusive - clear other filters
+                activeFilters.clear();
+                activeFilters.add('all');
+            } else {
+                // Remove "all" if adding specific filters
+                activeFilters.delete('all');
+                
+                // Toggle the specific filter
+                if (activeFilters.has(filterType)) {
+                    activeFilters.delete(filterType);
+                } else {
+                    activeFilters.add(filterType);
+                }
+                
+                // If no specific filters, default back to "all"
+                if (activeFilters.size === 0) {
+                    activeFilters.add('all');
+                }
+            }
+            
+            updateFilterUI();
+            applyFilters();
+        }
+        
+        function clearAllFilters() {
+            activeFilters.clear();
+            activeFilters.add('all');
+            updateFilterUI();
+            applyFilters();
+        }
+        
+        function updateFilterUI() {
+            // Update button states
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                const filter = btn.getAttribute('data-filter');
+                if (filter && activeFilters.has(filter)) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+        
+        function applyFilters() {
+            // Filter the nodes based on active filters
+            if (activeFilters.has('all')) {
+                currentNodes = [...allNodes]; // Show all nodes
+            } else {
+                currentNodes = allNodes.filter(node => {
+                    return Array.from(activeFilters).some(filter => nodeMatchesFilter(node, filter));
+                });
+            }
+            
+            // Update filter counts
+            updateFilterCounts();
+            
+            // Update filter status display
+            updateFilterStatus();
+            
+            // Re-display the filtered nodes
+            displayNodes();
+        }
+        
+        function nodeMatchesFilter(node, filter) {
+            const role = (node.role || '').toUpperCase();
+            const hasGPS = node.position && node.position[0] && node.position[1];
+            const battery = node.battery_level;
+            
+            switch (filter) {
+                case 'routers':
+                    return role.includes('ROUTER') && !role.includes('CLIENT');
+                    
+                case 'routers-no-gps':
+                    return (role.includes('ROUTER') && !role.includes('CLIENT')) && !hasGPS;
+                    
+                case 'clients':
+                    return role.includes('CLIENT') && !role.includes('MUTE');
+                    
+                case 'client-mute':
+                    return role.includes('CLIENT_MUTE') || role.includes('CLIENTMUTE');
+                    
+                case 'has-gps':
+                    return hasGPS;
+                    
+                case 'high-battery':
+                    return battery && battery > 70;
+                    
+                case 'low-battery':
+                    return battery && battery < 30;
+                    
+                default:
+                    return false;
+            }
+        }
+        
+        function updateFilterCounts() {
+            // Count nodes for each filter
+            const counts = {
+                'all': allNodes.length,
+                'routers': 0,
+                'routers-no-gps': 0,
+                'clients': 0,
+                'client-mute': 0,
+                'has-gps': 0,
+                'high-battery': 0,
+                'low-battery': 0
+            };
+            
+            allNodes.forEach(node => {
+                if (nodeMatchesFilter(node, 'routers')) counts['routers']++;
+                if (nodeMatchesFilter(node, 'routers-no-gps')) counts['routers-no-gps']++;
+                if (nodeMatchesFilter(node, 'clients')) counts['clients']++;
+                if (nodeMatchesFilter(node, 'client-mute')) counts['client-mute']++;
+                if (nodeMatchesFilter(node, 'has-gps')) counts['has-gps']++;
+                if (nodeMatchesFilter(node, 'high-battery')) counts['high-battery']++;
+                if (nodeMatchesFilter(node, 'low-battery')) counts['low-battery']++;
+            });
+            
+            // Update counter displays
+            Object.entries(counts).forEach(([filter, count]) => {
+                const counter = document.getElementById(`count-${filter}`);
+                if (counter) {
+                    counter.textContent = count;
+                }
+            });
+        }
+        
+        function updateFilterStatus() {
+            const statusDiv = document.getElementById('filter-status');
+            if (!statusDiv) return;
+            
+            if (activeFilters.has('all')) {
+                statusDiv.innerHTML = `📊 Showing all ${currentNodes.length} nodes`;
+            } else {
+                const filterNames = Array.from(activeFilters).map(f => {
+                    switch(f) {
+                        case 'routers': return 'Routers';
+                        case 'routers-no-gps': return 'Routers w/o GPS';
+                        case 'clients': return 'Clients';
+                        case 'client-mute': return 'Client Mute';
+                        case 'has-gps': return 'Has GPS';
+                        case 'high-battery': return 'High Battery';
+                        case 'low-battery': return 'Low Battery';
+                        default: return f;
+                    }
+                }).join(', ');
+                statusDiv.innerHTML = `🔍 Showing ${currentNodes.length} nodes filtered by: ${filterNames}`;
+            }
+        }
+        
+        // Sorting functionality
+        let currentSortColumn = null;
+        let currentSortDirection = 'asc';
+        
+        function sortNodes(column) {
+            // Toggle direction if clicking the same column
+            if (currentSortColumn === column) {
+                currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSortColumn = column;
+                currentSortDirection = 'asc';
+            }
+            
+            // Update header visual indicators
+            document.querySelectorAll('.sortable').forEach(th => {
+                th.classList.remove('asc', 'desc');
+            });
+            const activeHeader = document.querySelector(`.sortable[data-column="${column}"]`);
+            if (activeHeader) {
+                activeHeader.classList.add(currentSortDirection);
+            }
+            
+            // Sort the nodes array
+            currentNodes.sort((a, b) => {
+                let valueA = getSortValue(a, column);
+                let valueB = getSortValue(b, column);
+                
+                // Handle null/undefined values
+                if (valueA === null || valueA === undefined) valueA = '';
+                if (valueB === null || valueB === undefined) valueB = '';
+                
+                // Convert to comparable format
+                if (typeof valueA === 'string') valueA = valueA.toLowerCase();
+                if (typeof valueB === 'string') valueB = valueB.toLowerCase();
+                
+                let comparison = 0;
+                if (valueA < valueB) comparison = -1;
+                else if (valueA > valueB) comparison = 1;
+                
+                return currentSortDirection === 'desc' ? -comparison : comparison;
+            });
+            
+            // Redraw the table
+            displayNodes();
+        }
+        
+        function getSortValue(node, column) {
+            switch (column) {
+                case 'node_id': return node.node_id;
+                case 'name': 
+                    if (node.short_name && node.long_name) return `${node.short_name} (${node.long_name})`;
+                    else if (node.short_name) return node.short_name;
+                    else if (node.long_name) return node.long_name;
+                    else return node.node_id;
+                case 'role': return node.role || '';
+                case 'agent_count': return node.agent_count || 0;
+                case 'updated_at': return new Date(node.updated_at).getTime();
+                case 'battery_level': return node.battery_level || -1;
+                case 'rssi': return node.rssi || -999;
+                case 'hops_away': return node.hops_away || 999;
+                case 'packet_count': return node.packet_count || 0;
+                case 'status': 
+                    const isActive = new Date() - new Date(node.updated_at) < 60 * 60 * 1000;
+                    return isActive ? 1 : 0;
+                default: return '';
+            }
+        }
+        
         // Ensure initial load happens after DOM is ready
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM loaded, initializing nodes page...');
@@ -2086,6 +2415,11 @@ class DistributedMeshyMcMapfaceServer:
             if (button) {
                 button.onclick = toggleView;
             }
+            
+            // Initial sorting setup will be done after first load
+            
+            // Initialize filter UI
+            updateFilterUI();
             
             // Initial load after DOM is ready
             setTimeout(loadNodes, 1000); // Add small delay
