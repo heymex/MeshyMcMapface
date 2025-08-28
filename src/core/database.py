@@ -10,6 +10,19 @@ from typing import Dict, List, Optional, Tuple
 from abc import ABC, abstractmethod
 
 
+def safe_json_dumps(obj):
+    """Safely serialize objects to JSON, handling bytes and other non-serializable types"""
+    def default_serializer(o):
+        if isinstance(o, bytes):
+            return o.hex()
+        elif hasattr(o, '__dict__'):
+            return str(o)
+        else:
+            return str(o)
+    
+    return json.dumps(obj, default=default_serializer)
+
+
 class DatabaseConnection:
     """Manages database connections and schema setup"""
     
@@ -82,7 +95,7 @@ class PacketRepository(BaseRepository):
             cursor = conn.execute('''
                 INSERT INTO packet_buffer (timestamp, packet_data, server_status)
                 VALUES (?, ?, ?)
-            ''', (packet_data['timestamp'], json.dumps(packet_data), json.dumps(server_routing)))
+            ''', (packet_data['timestamp'], safe_json_dumps(packet_data), safe_json_dumps(server_routing)))
             
             packet_id = cursor.lastrowid
             conn.commit()

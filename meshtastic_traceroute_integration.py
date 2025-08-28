@@ -21,6 +21,7 @@ class MeshtasticTracerouteManager:
         self.logger = logger or self._default_logger()
         self.pending_traceroutes: Dict[str, Dict] = {}
         self.traceroute_results: List[Dict] = []
+        self.completed_routes = []  # Buffer for successful routes ready to send to server
         
     def _default_logger(self):
         import logging
@@ -152,6 +153,11 @@ class MeshtasticTracerouteManager:
                 'completed': True
             })
             
+            # Store successful routes in buffer for periodic collection
+            if route_data.get('success', False) and len(route_data.get('route_path', [])) > 1:
+                self.completed_routes.append(route_data)
+                self.logger.info(f"Buffered route for server: {' -> '.join(route_data['route_path'])}")
+            
             # Clean up
             del self.pending_traceroutes[discovery_id]
             
@@ -241,6 +247,12 @@ class MeshtasticTracerouteManager:
             'snr_back': snr_back_data,
             'discovery_method': 'meshtastic_traceroute'
         }
+    
+    def get_and_clear_completed_routes(self) -> List[Dict]:
+        """Get all completed routes and clear the buffer"""
+        routes = self.completed_routes.copy()
+        self.completed_routes.clear()
+        return routes
     
     def _get_local_node_id(self) -> str:
         """Get the local node ID"""

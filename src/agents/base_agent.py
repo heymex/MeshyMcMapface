@@ -175,20 +175,19 @@ class BaseAgent(ABC, LoggerMixin):
         
         self.logger.info(f"Starting route discovery for {len(known_nodes)} nodes")
         
-        # Perform traceroutes to all nodes
+        # Get completed routes from individual traceroutes that have been running
         try:
-            results = await self.traceroute_manager.discover_all_routes(
-                known_nodes,
-                hop_limit=hop_limit,
-                channel_index=0,
-                delay_between_traces=delay_between_traces
-            )
+            completed_routes = self.traceroute_manager.get_and_clear_completed_routes()
             
-            self.logger.info(f"Route discovery completed: {len(results)} successful routes")
-            return results
-            
+            if completed_routes:
+                self.logger.info(f"Collected {len(completed_routes)} completed routes for server")
+                return completed_routes
+            else:
+                self.logger.info("No completed routes available this cycle")
+                return []
+                
         except Exception as e:
-            self.logger.error(f"Error during route discovery: {e}")
+            self.logger.error(f"Error collecting completed routes: {e}")
             return []
     
     def _get_known_nodes_for_traceroute(self) -> List[str]:

@@ -169,6 +169,56 @@ class RoutingHandler(PacketHandler):
         return packet_data
 
 
+class TracerouteHandler(PacketHandler):
+    """Handler for traceroute packets"""
+    
+    def can_handle(self, packet: Dict) -> bool:
+        decoded = packet.get('decoded', {})
+        return 'traceroute' in decoded if decoded else False
+    
+    def process(self, packet: Dict) -> Dict:
+        packet_data = self._create_base_packet_data(packet)
+        packet_data['type'] = 'traceroute'
+        
+        traceroute = packet['decoded']['traceroute']
+        
+        # Safely extract traceroute data, avoiding binary data
+        traceroute_data = {}
+        
+        # Handle route field - may contain binary data
+        if hasattr(traceroute, 'route') or 'route' in traceroute:
+            route = getattr(traceroute, 'route', traceroute.get('route', []))
+            # Convert any binary data to hex strings
+            if isinstance(route, (list, tuple)):
+                traceroute_data['route'] = []
+                for hop in route:
+                    if isinstance(hop, bytes):
+                        traceroute_data['route'].append(hop.hex())
+                    elif isinstance(hop, int):
+                        traceroute_data['route'].append(f"!{hop:08x}")
+                    else:
+                        traceroute_data['route'].append(str(hop))
+            elif isinstance(route, bytes):
+                traceroute_data['route'] = route.hex()
+            else:
+                traceroute_data['route'] = str(route) if route is not None else None
+        
+        # Handle back field - may contain binary data
+        if hasattr(traceroute, 'back') or 'back' in traceroute:
+            back = getattr(traceroute, 'back', traceroute.get('back'))
+            if isinstance(back, bytes):
+                traceroute_data['back'] = back.hex()
+            elif back is not None:
+                traceroute_data['back'] = str(back)
+            else:
+                traceroute_data['back'] = None
+        
+        packet_data['payload'] = traceroute_data
+        
+        self.logger.debug(f"Processed traceroute packet from {packet_data['from_node']}")
+        return packet_data
+
+
 class EncryptedHandler(PacketHandler):
     """Handler for encrypted packets"""
     
@@ -213,6 +263,7 @@ class PacketProcessor:
             TelemetryHandler(),
             UserInfoHandler(),
             RoutingHandler(),
+            TracerouteHandler(),
             EncryptedHandler(),
             UnknownHandler()  # Always last as fallback
         ]
