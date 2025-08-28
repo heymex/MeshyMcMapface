@@ -267,7 +267,7 @@ class BaseAgent(ABC, LoggerMixin):
         }
         
         # Override with agent-specific config if available
-        if hasattr(self.agent_config, 'route_discovery'):
+        if hasattr(self.agent_config, 'route_discovery') and self.agent_config.route_discovery is not None:
             config.update(self.agent_config.route_discovery)
         
         return config
