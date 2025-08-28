@@ -46,6 +46,7 @@ class AgentConfig:
     location_name: str
     location_lat: float
     location_lon: float
+    route_discovery: Optional[Dict] = None
 
 
 @dataclass
@@ -88,11 +89,24 @@ class ConfigManager:
         """Load agent configuration"""
         try:
             agent_section = self.config['agent']
+            
+            # Load route discovery config if present
+            route_discovery = None
+            if 'route_discovery' in self.config.sections():
+                route_discovery_section = dict(self.config.items('route_discovery'))
+                route_discovery = {
+                    'enabled': route_discovery_section.get('enabled', 'true').lower() == 'true',
+                    'interval_minutes': int(route_discovery_section.get('interval_minutes', 60)),
+                    'hop_limit': int(route_discovery_section.get('hop_limit', 7)),
+                    'delay_between_traces': float(route_discovery_section.get('delay_between_traces', 3.0))
+                }
+            
             return AgentConfig(
                 id=agent_section['id'],
                 location_name=agent_section['location_name'],
                 location_lat=float(agent_section['location_lat']),
-                location_lon=float(agent_section['location_lon'])
+                location_lon=float(agent_section['location_lon']),
+                route_discovery=route_discovery
             )
         except Exception as e:
             raise ValueError(f"Error loading agent configuration: {e}")
