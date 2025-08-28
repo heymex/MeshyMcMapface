@@ -131,22 +131,28 @@ class MultiServerAgent(BaseAgent):
         self.start_server_tasks()
         
         # Start route discovery if enabled
-        route_config = self.get_route_discovery_config()
-        route_discovery_task = None
-        traceroute_task = None
-        if route_config.get('enabled', True):
-            # Start the base agent's periodic route collection (collects completed routes)
-            route_discovery_task = asyncio.create_task(
-                self.periodic_route_discovery(route_config.get('interval_minutes', 60))
-            )
-            self.logger.info(f"Started periodic route collection with {route_config.get('interval_minutes', 60)} minute intervals")
-            
-            # Start the traceroute manager's background traceroute process (runs individual traceroutes)
-            if self.traceroute_manager:
-                traceroute_task = asyncio.create_task(
-                    self._run_background_traceroutes(route_config)
+        try:
+            self.logger.info("Getting route discovery config...")
+            route_config = self.get_route_discovery_config()
+            self.logger.info(f"Route config loaded: {route_config}")
+            route_discovery_task = None
+            traceroute_task = None
+            self.logger.info("Checking if route discovery enabled...")
+            if route_config.get('enabled', True):
+                # Start the base agent's periodic route collection (collects completed routes)
+                route_discovery_task = asyncio.create_task(
+                    self.periodic_route_discovery(route_config.get('interval_minutes', 60))
                 )
-                self.logger.info(f"Started background traceroute discovery with {route_config.get('interval_minutes', 60)} minute cycles")
+                self.logger.info(f"Started periodic route collection with {route_config.get('interval_minutes', 60)} minute intervals")
+                
+                # Start the traceroute manager's background traceroute process (runs individual traceroutes)
+                if self.traceroute_manager:
+                    traceroute_task = asyncio.create_task(
+                        self._run_background_traceroutes(route_config)
+                    )
+                    self.logger.info(f"Started background traceroute discovery with {route_config.get('interval_minutes', 60)} minute cycles")
+        except Exception as e:
+            self.logger.error(f"Error setting up route discovery: {e}", exc_info=True)
         
         # Main processing loop
         try:
