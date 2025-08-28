@@ -114,7 +114,9 @@ class MeshtasticConnection:
             if hasattr(self.interface, 'nodesByNum') and self.interface.nodesByNum:
                 # Get our own node info
                 our_node = None
-                for node in self.interface.nodesByNum.values():
+                # Safely iterate over nodesByNum values
+                node_values = self.interface.nodesByNum.values() if self.interface.nodesByNum else []
+                for node in node_values:
                     if hasattr(node, 'isOurs') and node.isOurs:
                         our_node = node
                         break

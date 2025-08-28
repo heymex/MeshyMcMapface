@@ -201,7 +201,9 @@ class BaseAgent(ABC, LoggerMixin):
             interface = connection.interface
             if hasattr(interface, 'nodesByNum') and interface.nodesByNum:
                 local_node_id = self._get_local_node_id()
-                for node_num in interface.nodesByNum.keys():
+                # Safely iterate over nodesByNum keys
+                node_keys = interface.nodesByNum.keys() if interface.nodesByNum else []
+                for node_num in node_keys:
                     node_id = f"!{node_num:08x}"
                     # Skip our own node
                     if node_id != local_node_id:

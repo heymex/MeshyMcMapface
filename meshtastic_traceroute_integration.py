@@ -322,7 +322,9 @@ class MeshtasticTracerouteManager:
         
         try:
             if hasattr(self.interface, 'nodesByNum') and self.interface.nodesByNum:
-                for node_num in self.interface.nodesByNum.keys():
+                # Safely iterate over nodesByNum keys
+                node_keys = self.interface.nodesByNum.keys() if self.interface.nodesByNum else []
+                for node_num in node_keys:
                     node_id = f"!{node_num:08x}"
                     # Skip our own node
                     if node_id != self._get_local_node_id():
