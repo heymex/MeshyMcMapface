@@ -215,13 +215,18 @@ class MultiServerClient:
         if tasks:
             registration_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            for i, result in enumerate(registration_results):
-                server_name = server_names[i]
-                if isinstance(result, Exception):
-                    self.logger.error(f"Registration failed for {server_name}: {result}")
+            if registration_results is not None:
+                for i, result in enumerate(registration_results):
+                    server_name = server_names[i]
+                    if isinstance(result, Exception):
+                        self.logger.error(f"Registration failed for {server_name}: {result}")
+                        results[server_name] = False
+                    else:
+                        results[server_name] = result
+            else:
+                self.logger.warning("Registration gather returned None, marking all as failed")
+                for server_name in server_names:
                     results[server_name] = False
-                else:
-                    results[server_name] = result
         
         return results
     
@@ -286,13 +291,18 @@ class MultiServerClient:
         if tasks:
             send_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            for i, result in enumerate(send_results):
-                server_name = server_names[i]
-                if isinstance(result, Exception):
-                    self.logger.error(f"Nodedb send failed for {server_name}: {result}")
+            if send_results is not None:
+                for i, result in enumerate(send_results):
+                    server_name = server_names[i]
+                    if isinstance(result, Exception):
+                        self.logger.error(f"Nodedb send failed for {server_name}: {result}")
+                        results[server_name] = False
+                    else:
+                        results[server_name] = result
+            else:
+                self.logger.warning("Nodedb send gather returned None, marking all as failed")
+                for server_name in server_names:
                     results[server_name] = False
-                else:
-                    results[server_name] = result
         
         return results
     
@@ -321,13 +331,18 @@ class MultiServerClient:
         if tasks:
             send_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            for i, result in enumerate(send_results):
-                server_name = server_names[i]
-                if isinstance(result, Exception):
-                    self.logger.error(f"Route data send failed for {server_name}: {result}")
+            if send_results is not None:
+                for i, result in enumerate(send_results):
+                    server_name = server_names[i]
+                    if isinstance(result, Exception):
+                        self.logger.error(f"Route data send failed for {server_name}: {result}")
+                        results[server_name] = False
+                    else:
+                        results[server_name] = result
+            else:
+                self.logger.warning("Route data send gather returned None, marking all as failed")
+                for server_name in server_names:
                     results[server_name] = False
-                else:
-                    results[server_name] = result
         
         return results
     
@@ -349,13 +364,18 @@ class MultiServerClient:
         if tasks:
             health_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            for i, result in enumerate(health_results):
-                server_name = server_names[i]
-                if isinstance(result, Exception):
-                    self.logger.debug(f"Health check failed for {server_name}: {result}")
+            if health_results is not None:
+                for i, result in enumerate(health_results):
+                    server_name = server_names[i]
+                    if isinstance(result, Exception):
+                        self.logger.debug(f"Health check failed for {server_name}: {result}")
+                        results[server_name] = False
+                    else:
+                        results[server_name] = result
+            else:
+                self.logger.warning("Health check gather returned None, marking all as failed")
+                for server_name in server_names:
                     results[server_name] = False
-                else:
-                    results[server_name] = result
         
         return results
     
