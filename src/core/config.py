@@ -252,6 +252,14 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         '# exclude_nodes': '!private_node'
     }
     
+    # Route discovery configuration
+    config['route_discovery'] = {
+        'enabled': 'true',
+        'interval_minutes': '60',
+        'hop_limit': '7',
+        'delay_between_traces': '3.0'
+    }
+    
     with open(filename, 'w') as f:
         config.write(f)
     
@@ -260,3 +268,7 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
     print("  - Primary: Real-time reporting every 30s")
     print("  - Backup: Redundant reporting every 60s") 
     print("  - Analytics: Position/telemetry only every 5min")
+    print("\nRoute discovery:")
+    print("  - Enabled: Automatic traceroute-based topology mapping")
+    print("  - Interval: Every 60 minutes")
+    print("  - Creates link-by-link network topology data")
