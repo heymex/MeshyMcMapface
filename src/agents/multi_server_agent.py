@@ -133,11 +133,20 @@ class MultiServerAgent(BaseAgent):
         # Start route discovery if enabled
         route_config = self.get_route_discovery_config()
         route_discovery_task = None
+        traceroute_task = None
         if route_config.get('enabled', True):
+            # Start the base agent's periodic route collection (collects completed routes)
             route_discovery_task = asyncio.create_task(
                 self.periodic_route_discovery(route_config.get('interval_minutes', 60))
             )
-            self.logger.info(f"Started periodic route discovery with {route_config.get('interval_minutes', 60)} minute intervals")
+            self.logger.info(f"Started periodic route collection with {route_config.get('interval_minutes', 60)} minute intervals")
+            
+            # Start the traceroute manager's background traceroute process (runs individual traceroutes)
+            if self.traceroute_manager:
+                traceroute_task = asyncio.create_task(
+                    self._run_background_traceroutes(route_config)
+                )
+                self.logger.info(f"Started background traceroute discovery with {route_config.get('interval_minutes', 60)} minute cycles")
         
         # Main processing loop
         try:
@@ -270,6 +279,26 @@ class MultiServerAgent(BaseAgent):
         except Exception as e:
             self.logger.error(f"Error sending route data to servers: {e}")
 
+    async def _run_background_traceroutes(self, route_config: Dict):
+        """Run background traceroutes using the traceroute manager's periodic discovery"""
+        try:
+            self.logger.info("Starting background traceroute process")
+            
+            # Use the traceroute manager's periodic route discovery
+            # This will continuously run traceroutes and populate the completed_routes buffer
+            async for route_results in self.traceroute_manager.periodic_route_discovery(
+                route_config.get('interval_minutes', 60)
+            ):
+                if route_results:
+                    self.logger.info(f"Background traceroute completed: {len(route_results)} routes discovered")
+                    # These routes are automatically added to the buffer by the traceroute manager
+                    # The periodic_route_discovery in base_agent will collect them
+                else:
+                    self.logger.debug("Background traceroute cycle completed with no successful routes")
+                    
+        except Exception as e:
+            self.logger.error(f"Error in background traceroute process: {e}")
+    
     async def force_send_to_all_servers(self):
         """Force sending queued data to all servers (useful for testing)"""
         self.logger.info("Force sending data to all servers...")

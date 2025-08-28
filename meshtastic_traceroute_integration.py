@@ -250,6 +250,8 @@ class MeshtasticTracerouteManager:
     
     def get_and_clear_completed_routes(self) -> List[Dict]:
         """Get all completed routes and clear the buffer"""
+        if not hasattr(self, 'completed_routes') or self.completed_routes is None:
+            self.completed_routes = []
         routes = self.completed_routes.copy()
         self.completed_routes.clear()
         return routes
