@@ -15,10 +15,11 @@ from meshtastic import mesh_pb2
 class MeshtasticTracerouteManager:
     """Manages traceroute operations using Meshtastic's built-in functionality"""
     
-    def __init__(self, interface, agent_id: str, logger=None):
+    def __init__(self, interface, agent_id: str, logger=None, route_cache=None):
         self.interface = interface
         self.agent_id = agent_id
         self.logger = logger or self._default_logger()
+        self.route_cache = route_cache  # RouteCacheRepository instance for persistent caching
         self.pending_traceroutes: Dict[str, Dict] = {}
         self.traceroute_results: List[Dict] = []
         self.completed_routes = []  # Buffer for successful routes ready to send to server
@@ -86,6 +87,17 @@ class MeshtasticTracerouteManager:
         Returns:
             Route data dict or None if failed
         """
+        # Check cache first if available
+        if self.route_cache:
+            try:
+                source_node = self._get_local_node_id()
+                cached_route = self.route_cache.get_cached_route(source_node, target_node, self.agent_id)
+                if cached_route:
+                    self.logger.info(f"Using cached route to {target_node}: {cached_route['hop_count']} hops")
+                    return cached_route
+            except Exception as e:
+                self.logger.warning(f"Error checking route cache: {e}")
+        
         discovery_id = str(uuid.uuid4())
         start_time = time.time()
         
@@ -157,6 +169,15 @@ class MeshtasticTracerouteManager:
             if route_data.get('success', False) and len(route_data.get('route_path', [])) > 1:
                 self.completed_routes.append(route_data)
                 self.logger.info(f"Buffered route for server: {' -> '.join(route_data['route_path'])}")
+                
+                # Cache successful route if cache is available
+                if self.route_cache:
+                    try:
+                        cache_success = self.route_cache.store_route(route_data, self.agent_id)
+                        if cache_success:
+                            self.logger.debug(f"Cached route: {route_data['source_node_id']} -> {route_data['target_node_id']}")
+                    except Exception as e:
+                        self.logger.warning(f"Error caching route: {e}")
             
             # Clean up
             del self.pending_traceroutes[discovery_id]
@@ -255,6 +276,24 @@ class MeshtasticTracerouteManager:
         routes = self.completed_routes.copy()
         self.completed_routes.clear()
         return routes
+    
+    def cleanup_expired_cache(self):
+        """Clean up expired routes from cache"""
+        if self.route_cache:
+            try:
+                self.route_cache.cleanup_expired_routes()
+            except Exception as e:
+                self.logger.error(f"Error cleaning up expired cache: {e}")
+    
+    def get_cache_stats(self) -> Dict:
+        """Get route cache statistics"""
+        if self.route_cache:
+            try:
+                return self.route_cache.get_cache_stats(self.agent_id)
+            except Exception as e:
+                self.logger.error(f"Error getting cache stats: {e}")
+                return {}
+        return {}
     
     def _get_local_node_id(self) -> str:
         """Get the local node ID"""

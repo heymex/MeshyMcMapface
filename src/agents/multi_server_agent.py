@@ -111,6 +111,15 @@ class MultiServerAgent(BaseAgent):
         try:
             await super().cleanup_old_data()
             self.queue_manager.cleanup_old_data()
+            
+            # Clean up expired route cache if traceroute manager is available
+            if self.traceroute_manager:
+                self.traceroute_manager.cleanup_expired_cache()
+                # Log cache stats for monitoring
+                cache_stats = self.traceroute_manager.get_cache_stats()
+                if cache_stats:
+                    self.logger.info(f"Route cache stats: {cache_stats}")
+            
             self.logger.debug("Completed data cleanup")
         except Exception as e:
             self.logger.error(f"Error during data cleanup: {e}")

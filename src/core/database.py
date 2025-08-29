@@ -5,7 +5,7 @@ Provides repository pattern for data access
 import sqlite3
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 from abc import ABC, abstractmethod
 
@@ -71,6 +71,22 @@ class DatabaseConnection:
                 consecutive_failures INTEGER DEFAULT 0,
                 total_packets_sent INTEGER DEFAULT 0,
                 is_healthy BOOLEAN DEFAULT 1
+            )
+        ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS route_cache (
+                source_node TEXT,
+                target_node TEXT,
+                agent_id TEXT,
+                route_path TEXT,
+                hop_count INTEGER,
+                snr_data TEXT,
+                discovery_timestamp TEXT,
+                last_used TEXT,
+                expires_at TEXT,
+                total_time_ms INTEGER,
+                PRIMARY KEY (source_node, target_node, agent_id)
             )
         ''')
         
@@ -257,6 +273,143 @@ class NodeRepository(BaseRepository):
         except Exception as e:
             self.logger.error(f"Error cleaning up old nodes: {e}")
             raise
+
+
+class RouteCacheRepository(BaseRepository):
+    """Repository for cached route data operations"""
+    
+    def store_route(self, route_data: Dict, agent_id: str, cache_duration_hours: int = 24) -> bool:
+        """Store a successful route in the cache"""
+        try:
+            conn = self.db_connection.get_connection()
+            
+            source_node = route_data.get('source_node_id', '')
+            target_node = route_data.get('target_node_id', '')
+            route_path = json.dumps(route_data.get('route_path', []))
+            hop_count = route_data.get('hop_count', 0)
+            snr_data = json.dumps(route_data.get('snr_towards', []))
+            discovery_timestamp = route_data.get('discovery_timestamp', datetime.now(timezone.utc).isoformat())
+            total_time_ms = route_data.get('total_time_ms', 0)
+            
+            # Calculate expiration time
+            now = datetime.now(timezone.utc)
+            expires_at = (now + timedelta(hours=cache_duration_hours)).isoformat()
+            last_used = now.isoformat()
+            
+            conn.execute('''
+                INSERT OR REPLACE INTO route_cache 
+                (source_node, target_node, agent_id, route_path, hop_count, snr_data, 
+                 discovery_timestamp, last_used, expires_at, total_time_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (source_node, target_node, agent_id, route_path, hop_count, snr_data,
+                  discovery_timestamp, last_used, expires_at, total_time_ms))
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.debug(f"Cached route: {source_node} -> {target_node} (expires in {cache_duration_hours}h)")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error storing route cache: {e}")
+            return False
+    
+    def get_cached_route(self, source_node: str, target_node: str, agent_id: str) -> Optional[Dict]:
+        """Get cached route if available and not expired"""
+        try:
+            conn = self.db_connection.get_connection()
+            
+            cursor = conn.execute('''
+                SELECT route_path, hop_count, snr_data, discovery_timestamp, expires_at, total_time_ms
+                FROM route_cache 
+                WHERE source_node = ? AND target_node = ? AND agent_id = ?
+                AND datetime(expires_at) > datetime('now')
+            ''', (source_node, target_node, agent_id))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                # Update last_used timestamp
+                conn.execute('''
+                    UPDATE route_cache SET last_used = ? 
+                    WHERE source_node = ? AND target_node = ? AND agent_id = ?
+                ''', (datetime.now(timezone.utc).isoformat(), source_node, target_node, agent_id))
+                conn.commit()
+                
+                cached_route = {
+                    'route_path': json.loads(row[0]),
+                    'hop_count': row[1],
+                    'snr_towards': json.loads(row[2]),
+                    'discovery_timestamp': row[3],
+                    'expires_at': row[4],
+                    'total_time_ms': row[5],
+                    'from_cache': True
+                }
+                
+                self.logger.debug(f"Found cached route: {source_node} -> {target_node}")
+                conn.close()
+                return cached_route
+            
+            conn.close()
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving cached route: {e}")
+            return None
+    
+    def cleanup_expired_routes(self):
+        """Remove expired routes from cache"""
+        try:
+            conn = self.db_connection.get_connection()
+            
+            cursor = conn.execute('SELECT COUNT(*) FROM route_cache WHERE datetime(expires_at) <= datetime("now")')
+            expired_count = cursor.fetchone()[0]
+            
+            if expired_count > 0:
+                conn.execute('DELETE FROM route_cache WHERE datetime(expires_at) <= datetime("now")')
+                conn.commit()
+                self.logger.info(f"Cleaned up {expired_count} expired cached routes")
+            
+            conn.close()
+            
+        except Exception as e:
+            self.logger.error(f"Error cleaning up expired routes: {e}")
+    
+    def get_cache_stats(self, agent_id: str) -> Dict:
+        """Get cache statistics"""
+        try:
+            conn = self.db_connection.get_connection()
+            
+            # Total cached routes
+            cursor = conn.execute('SELECT COUNT(*) FROM route_cache WHERE agent_id = ?', (agent_id,))
+            total_routes = cursor.fetchone()[0]
+            
+            # Valid (non-expired) routes
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM route_cache 
+                WHERE agent_id = ? AND datetime(expires_at) > datetime("now")
+            ''', (agent_id,))
+            valid_routes = cursor.fetchone()[0]
+            
+            # Recently used routes (last 24 hours)
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM route_cache 
+                WHERE agent_id = ? AND datetime(last_used) > datetime("now", "-1 day")
+            ''', (agent_id,))
+            recent_routes = cursor.fetchone()[0]
+            
+            conn.close()
+            
+            return {
+                'total_cached_routes': total_routes,
+                'valid_routes': valid_routes,
+                'expired_routes': total_routes - valid_routes,
+                'recently_used': recent_routes
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error getting cache stats: {e}")
+            return {}
 
 
 class ServerHealthRepository(BaseRepository):

@@ -147,15 +147,20 @@ class BaseAgent(ABC, LoggerMixin):
             import os
             sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
             from meshtastic_traceroute_integration import MeshtasticTracerouteManager
+            from ..core.database import RouteCacheRepository
             
             connection = self.connection_manager.get_connection()
             if connection and connection.interface:
+                # Initialize route cache repository
+                route_cache = RouteCacheRepository(self.db_connection)
+                
                 self.traceroute_manager = MeshtasticTracerouteManager(
                     connection.interface,
                     self.agent_config.id,
-                    self.logger
+                    self.logger,
+                    route_cache
                 )
-                self.logger.info("Traceroute manager initialized")
+                self.logger.info("Traceroute manager initialized with route cache")
             else:
                 self.logger.warning("Could not initialize traceroute manager - no interface available")
         except Exception as e:
