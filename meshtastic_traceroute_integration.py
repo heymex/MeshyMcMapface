@@ -15,14 +15,17 @@ from meshtastic import mesh_pb2
 class MeshtasticTracerouteManager:
     """Manages traceroute operations using Meshtastic's built-in functionality"""
     
-    def __init__(self, interface, agent_id: str, logger=None, route_cache=None):
+    def __init__(self, interface, agent_id: str, logger=None, route_cache=None, priority_nodes=None):
         self.interface = interface
         self.agent_id = agent_id
         self.logger = logger or self._default_logger()
         self.route_cache = route_cache  # RouteCacheRepository instance for persistent caching
+        self.priority_nodes = set(priority_nodes or [])  # Set of priority node IDs
         self.pending_traceroutes: Dict[str, Dict] = {}
         self.traceroute_results: List[Dict] = []
         self.completed_routes = []  # Buffer for successful routes ready to send to server
+        self.priority_queue = []  # High-priority traceroutes
+        self.regular_queue = []   # Normal traceroutes
         
     def _default_logger(self):
         import logging
@@ -74,7 +77,8 @@ class MeshtasticTracerouteManager:
     async def traceroute_to_node(self, target_node: str, 
                                 hop_limit: int = 7,
                                 channel_index: int = 0,
-                                timeout: float = 30.0) -> Optional[Dict]:
+                                timeout: float = 30.0,
+                                is_priority: bool = None) -> Optional[Dict]:
         """
         Perform traceroute to a specific node
         
@@ -83,18 +87,33 @@ class MeshtasticTracerouteManager:
             hop_limit: Maximum hops to trace
             channel_index: Channel index
             timeout: Timeout in seconds
+            is_priority: Override priority detection, if None auto-detect from priority_nodes
             
         Returns:
             Route data dict or None if failed
         """
+        # Auto-detect priority if not specified
+        if is_priority is None:
+            is_priority = self.is_priority_node(target_node)
+        
         # Check cache first if available
         if self.route_cache:
             try:
                 source_node = self._get_local_node_id()
                 cached_route = self.route_cache.get_cached_route(source_node, target_node, self.agent_id)
+                
                 if cached_route:
-                    self.logger.info(f"Using cached route to {target_node}: {cached_route['hop_count']} hops")
-                    return cached_route
+                    # For priority nodes, check if cache is still fresh enough
+                    if is_priority:
+                        cache_age_hours = self.route_cache.get_cache_age_hours(source_node, target_node, self.agent_id)
+                        if cache_age_hours > 6:  # Priority nodes get 6-hour cache vs 24-hour
+                            self.logger.info(f"Priority node {target_node} cache is stale ({cache_age_hours:.1f}h), forcing refresh")
+                        else:
+                            self.logger.info(f"Using fresh cached route to priority node {target_node}: {cached_route['hop_count']} hops")
+                            return cached_route
+                    else:
+                        self.logger.info(f"Using cached route to {target_node}: {cached_route['hop_count']} hops")
+                        return cached_route
             except Exception as e:
                 self.logger.warning(f"Error checking route cache: {e}")
         
@@ -173,9 +192,18 @@ class MeshtasticTracerouteManager:
                 # Cache successful route if cache is available
                 if self.route_cache:
                     try:
-                        cache_success = self.route_cache.store_route(route_data, self.agent_id)
+                        # Check if this involves a priority node
+                        source_node = route_data['source_node_id']
+                        target_node = route_data['target_node_id']
+                        is_priority_route = (self.is_priority_node(source_node) or 
+                                           self.is_priority_node(target_node))
+                        
+                        cache_success = self.route_cache.store_route(
+                            route_data, self.agent_id, is_priority=is_priority_route
+                        )
                         if cache_success:
-                            self.logger.debug(f"Cached route: {route_data['source_node_id']} -> {route_data['target_node_id']}")
+                            priority_text = " (priority)" if is_priority_route else ""
+                            self.logger.debug(f"Cached route{priority_text}: {source_node} -> {target_node}")
                     except Exception as e:
                         self.logger.warning(f"Error caching route: {e}")
             
@@ -294,6 +322,69 @@ class MeshtasticTracerouteManager:
                 self.logger.error(f"Error getting cache stats: {e}")
                 return {}
         return {}
+    
+    def is_priority_node(self, node_id: str) -> bool:
+        """Check if a node is marked as priority"""
+        return node_id in self.priority_nodes
+    
+    async def refresh_priority_routes(self) -> List[Dict]:
+        """Proactively refresh routes to/from priority nodes"""
+        results = []
+        
+        for priority_node in self.priority_nodes:
+            try:
+                # Check if we need to refresh this priority node's route
+                if self._needs_priority_refresh(priority_node):
+                    self.logger.info(f"Refreshing priority node route: {priority_node}")
+                    route = await self.traceroute_to_node(priority_node, is_priority=True)
+                    if route:
+                        results.append(route)
+                        
+            except Exception as e:
+                self.logger.error(f"Error refreshing priority route to {priority_node}: {e}")
+        
+        return results
+    
+    def _needs_priority_refresh(self, target_node: str) -> bool:
+        """Check if a priority node needs route refresh"""
+        if not self.route_cache:
+            return True
+            
+        try:
+            source_node = self._get_local_node_id()
+            return self.route_cache.needs_priority_refresh(source_node, target_node, self.agent_id)
+        except Exception as e:
+            self.logger.warning(f"Error checking priority refresh need: {e}")
+            return True
+    
+    def get_priority_stats(self) -> Dict:
+        """Get statistics about priority nodes"""
+        stats = {
+            'total_priority_nodes': len(self.priority_nodes),
+            'priority_nodes': list(self.priority_nodes),
+            'priority_routes_cached': 0,
+            'stale_priority_routes': 0
+        }
+        
+        if self.route_cache and self.priority_nodes:
+            try:
+                # Count cached routes involving priority nodes
+                for priority_node in self.priority_nodes:
+                    source_node = self._get_local_node_id()
+                    cached_route = self.route_cache.get_cached_route(source_node, priority_node, self.agent_id)
+                    if cached_route:
+                        stats['priority_routes_cached'] += 1
+                
+                # Count stale priority routes
+                stale_routes = self.route_cache.get_stale_priority_routes(
+                    self.agent_id, list(self.priority_nodes), 6
+                )
+                stats['stale_priority_routes'] = len(stale_routes)
+                
+            except Exception as e:
+                self.logger.error(f"Error getting priority stats: {e}")
+        
+        return stats
     
     def _get_local_node_id(self) -> str:
         """Get the local node ID"""

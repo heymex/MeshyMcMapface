@@ -47,6 +47,13 @@ class AgentConfig:
     location_lat: float
     location_lon: float
     route_discovery: Optional[Dict] = None
+    priority_nodes: List[str] = None
+    priority_check_interval: int = 300  # 5 minutes for priority node checks
+    priority_cache_duration: int = 12   # 12 hours cache for priority nodes vs 24 for regular
+    
+    def __post_init__(self):
+        if self.priority_nodes is None:
+            self.priority_nodes = []
 
 
 @dataclass
@@ -101,12 +108,20 @@ class ConfigManager:
                     'delay_between_traces': float(route_discovery_section.get('delay_between_traces', 3.0))
                 }
             
+            # Parse priority nodes
+            priority_nodes = []
+            if agent_section.get('priority_nodes'):
+                priority_nodes = [node.strip() for node in agent_section['priority_nodes'].split(',') if node.strip()]
+            
             return AgentConfig(
                 id=agent_section['id'],
                 location_name=agent_section['location_name'],
                 location_lat=float(agent_section['location_lat']),
                 location_lon=float(agent_section['location_lon']),
-                route_discovery=route_discovery
+                route_discovery=route_discovery,
+                priority_nodes=priority_nodes,
+                priority_check_interval=int(agent_section.get('priority_check_interval', 300)),
+                priority_cache_duration=int(agent_section.get('priority_cache_duration', 12))
             )
         except Exception as e:
             raise ValueError(f"Error loading agent configuration: {e}")
@@ -204,7 +219,10 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         'id': 'agent_001',
         'location_name': 'Test Location',
         'location_lat': '37.7749',
-        'location_lon': '-122.4194'
+        'location_lon': '-122.4194',
+        '# priority_nodes': '!12345678,!87654321,!abcdef01',
+        '# priority_check_interval': '300',
+        '# priority_cache_duration': '12'
     }
     
     config['meshtastic'] = {
@@ -272,3 +290,8 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
     print("  - Enabled: Automatic traceroute-based topology mapping")
     print("  - Interval: Every 60 minutes")
     print("  - Creates link-by-link network topology data")
+    print("\nPriority node monitoring (optional):")
+    print("  - Uncomment priority_nodes to enable priority monitoring")
+    print("  - Priority nodes get fresher route data (6h cache vs 24h)")
+    print("  - Proactive refresh every 2 hours")
+    print("  - Example nodes: gateways, repeaters, critical infrastructure")

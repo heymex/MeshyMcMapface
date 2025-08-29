@@ -5,7 +5,8 @@ import asyncio
 from typing import Dict, List
 
 from .base_agent import BaseAgent
-from ..core.database import PacketRepository, NodeRepository, ServerHealthRepository
+from ..core.database import PacketRepository, NodeRepository, ServerHealthRepository, RouteCacheRepository
+from ..core.priority_monitor import PriorityNodeMonitor
 from ..servers.client import MultiServerClient
 from ..servers.health import MultiServerHealthMonitor
 from ..servers.queue_manager import MultiServerQueueManager, ServerTaskManager
@@ -31,6 +32,19 @@ class MultiServerAgent(BaseAgent):
         self.queue_manager = MultiServerQueueManager(self.server_configs, self.packet_repo, self.node_repo)
         self.task_manager = ServerTaskManager(self.queue_manager)
         
+        # Initialize priority monitor if priority nodes are configured
+        if self.agent_config.priority_nodes:
+            route_cache = RouteCacheRepository(self.db_connection)
+            self.priority_monitor = PriorityNodeMonitor(
+                self.agent_config,
+                route_cache,
+                None,  # Will be set after traceroute manager is initialized
+                self.logger
+            )
+            self.logger.info(f"Priority monitor initialized for {len(self.agent_config.priority_nodes)} nodes: {self.agent_config.priority_nodes}")
+        else:
+            self.priority_monitor = None
+        
         self.logger.info(f"Initialized multi-server agent with {len(self.server_configs)} servers")
         for name, config in self.server_configs.items():
             if config.enabled:
@@ -44,12 +58,23 @@ class MultiServerAgent(BaseAgent):
             packet_id = self.queue_manager.queue_packet(packet_data)
             if packet_id > 0:
                 self.logger.debug(f"Queued packet {packet_id} from {packet_data.get('from_node')}")
+            
+            # Check if this packet is from a priority node
+            from_node = packet_data.get('from_node')
+            if from_node and self.priority_monitor:
+                self.priority_monitor.on_priority_node_seen(from_node, packet_data)
+                
         except Exception as e:
             self.logger.error(f"Error queuing packet: {e}")
     
     def _handle_connection_established(self):
         """Handle Meshtastic connection establishment"""
         self.logger.info("Meshtastic connection established, starting server registrations")
+        
+        # Link priority monitor to traceroute manager after connection is established
+        if self.priority_monitor and self.traceroute_manager:
+            self.priority_monitor.traceroute_manager = self.traceroute_manager
+            self.logger.info("Priority monitor linked to traceroute manager")
     
     async def register_with_servers(self):
         """Register this agent with all enabled servers"""
@@ -140,12 +165,14 @@ class MultiServerAgent(BaseAgent):
         self.start_server_tasks()
         
         # Start route discovery if enabled
+        route_discovery_task = None
+        traceroute_task = None
+        priority_monitor_task = None
+        
         try:
             self.logger.info("Getting route discovery config...")
             route_config = self.get_route_discovery_config()
             self.logger.info(f"Route config loaded: {route_config}")
-            route_discovery_task = None
-            traceroute_task = None
             self.logger.info("Checking if route discovery enabled...")
             if route_config.get('enabled', True):
                 # Start the base agent's periodic route collection (collects completed routes)
@@ -162,6 +189,16 @@ class MultiServerAgent(BaseAgent):
                     self.logger.info(f"Started background traceroute discovery with {route_config.get('interval_minutes', 60)} minute cycles")
         except Exception as e:
             self.logger.error(f"Error setting up route discovery: {e}", exc_info=True)
+        
+        # Start priority monitoring if configured
+        try:
+            if self.priority_monitor:
+                priority_monitor_task = asyncio.create_task(
+                    self.priority_monitor.start_monitoring()
+                )
+                self.logger.info(f"Started priority node monitoring for {len(self.agent_config.priority_nodes)} nodes")
+        except Exception as e:
+            self.logger.error(f"Error setting up priority monitoring: {e}", exc_info=True)
         
         # Main processing loop
         try:
@@ -195,6 +232,12 @@ class MultiServerAgent(BaseAgent):
         finally:
             # Cleanup
             self.stop_server_tasks()
+            
+            # Stop priority monitoring
+            if self.priority_monitor:
+                self.priority_monitor.stop_monitoring()
+                self.logger.info("Priority monitoring stopped")
+            
             self.logger.info("Multi-Server MeshyMcMapface Agent stopped")
     
     def get_agent_info(self) -> Dict:
@@ -211,6 +254,10 @@ class MultiServerAgent(BaseAgent):
             },
             'active_tasks': self.task_manager.get_active_tasks()
         })
+        
+        # Add priority monitoring info if available
+        if self.priority_monitor:
+            base_info['priority_monitoring'] = self.priority_monitor.get_priority_monitor_stats()
         
         return base_info
     

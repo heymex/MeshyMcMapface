@@ -278,7 +278,7 @@ class NodeRepository(BaseRepository):
 class RouteCacheRepository(BaseRepository):
     """Repository for cached route data operations"""
     
-    def store_route(self, route_data: Dict, agent_id: str, cache_duration_hours: int = 24) -> bool:
+    def store_route(self, route_data: Dict, agent_id: str, cache_duration_hours: int = 24, is_priority: bool = False) -> bool:
         """Store a successful route in the cache"""
         try:
             conn = self.db_connection.get_connection()
@@ -290,6 +290,10 @@ class RouteCacheRepository(BaseRepository):
             snr_data = json.dumps(route_data.get('snr_towards', []))
             discovery_timestamp = route_data.get('discovery_timestamp', datetime.now(timezone.utc).isoformat())
             total_time_ms = route_data.get('total_time_ms', 0)
+            
+            # Adjust cache duration for priority routes
+            if is_priority:
+                cache_duration_hours = min(cache_duration_hours // 2, 12)  # Max 12 hours for priority
             
             # Calculate expiration time
             now = datetime.now(timezone.utc)
@@ -410,6 +414,78 @@ class RouteCacheRepository(BaseRepository):
         except Exception as e:
             self.logger.error(f"Error getting cache stats: {e}")
             return {}
+    
+    def get_stale_priority_routes(self, agent_id: str, priority_nodes: List[str], staleness_threshold_hours: int = 6) -> List[Dict]:
+        """Get priority routes that are getting stale and need refresh"""
+        if not priority_nodes:
+            return []
+        
+        try:
+            conn = self.db_connection.get_connection()
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=staleness_threshold_hours)
+            
+            # Build query to check for routes involving priority nodes
+            priority_conditions = []
+            params = [agent_id, cutoff.isoformat()]
+            
+            for i, node in enumerate(priority_nodes):
+                priority_conditions.append(f"(source_node = ? OR target_node = ?)")
+                params.extend([node, node])
+            
+            query = f'''
+                SELECT source_node, target_node, last_used, expires_at, route_path
+                FROM route_cache 
+                WHERE agent_id = ? AND last_used < ? 
+                AND ({' OR '.join(priority_conditions)})
+                AND datetime(expires_at) > datetime('now')
+            '''
+            
+            cursor = conn.execute(query, params)
+            results = []
+            
+            for row in cursor.fetchall():
+                results.append({
+                    'source': row[0],
+                    'target': row[1],
+                    'last_used': row[2],
+                    'expires_at': row[3],
+                    'route_path': json.loads(row[4])
+                })
+            
+            conn.close()
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error getting stale priority routes: {e}")
+            return []
+    
+    def get_cache_age_hours(self, source_node: str, target_node: str, agent_id: str) -> float:
+        """Get the age of a cached route in hours"""
+        try:
+            conn = self.db_connection.get_connection()
+            cursor = conn.execute('''
+                SELECT last_used FROM route_cache 
+                WHERE source_node = ? AND target_node = ? AND agent_id = ?
+            ''', (source_node, target_node, agent_id))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                last_used = datetime.fromisoformat(row[0].replace('Z', '+00:00'))
+                age = datetime.now(timezone.utc) - last_used
+                return age.total_seconds() / 3600
+            
+            return float('inf')  # No cache entry = infinite age
+            
+        except Exception as e:
+            self.logger.error(f"Error getting cache age: {e}")
+            return float('inf')
+    
+    def needs_priority_refresh(self, source_node: str, target_node: str, agent_id: str, max_age_hours: int = 6) -> bool:
+        """Check if a priority route needs refreshing"""
+        age_hours = self.get_cache_age_hours(source_node, target_node, agent_id)
+        return age_hours >= max_age_hours
 
 
 class ServerHealthRepository(BaseRepository):

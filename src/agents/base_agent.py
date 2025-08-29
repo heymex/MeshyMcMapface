@@ -158,7 +158,8 @@ class BaseAgent(ABC, LoggerMixin):
                     connection.interface,
                     self.agent_config.id,
                     self.logger,
-                    route_cache
+                    route_cache,
+                    self.agent_config.priority_nodes
                 )
                 self.logger.info("Traceroute manager initialized with route cache")
             else:
