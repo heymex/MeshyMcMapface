@@ -15,7 +15,11 @@ import argparse
 from pathlib import Path
 import hashlib
 import secrets
+import sys
 from typing import Dict, List, Optional
+
+# Add src directory to Python path for access to logging utilities
+sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 class DistributedMeshyMcMapfaceServer:
     def __init__(self, config_file: str):
@@ -32,9 +36,7 @@ class DistributedMeshyMcMapfaceServer:
         if self.config.has_section('api_keys'):
             self.api_keys = dict(self.config.items('api_keys'))
         
-        # Setup logging
-        logging.basicConfig(level=logging.INFO, 
-                          format='%(asctime)s - %(levelname)s - %(message)s')
+        # Get logger (logging setup handled by main function)
         self.logger = logging.getLogger(__name__)
         
         # Web app
@@ -3196,6 +3198,11 @@ async def main():
                        help='Configuration file path')
     parser.add_argument('--create-config', action='store_true',
                        help='Create sample configuration file')
+    parser.add_argument('--log-level', default='INFO',
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                       help='Logging level')
+    parser.add_argument('--log-file', 
+                       help='Log file path (optional)')
     
     args = parser.parse_args()
     
@@ -3207,6 +3214,37 @@ async def main():
         print(f"Configuration file {args.config} not found.")
         print("Use --create-config to generate a sample configuration.")
         return
+    
+    # Load syslog configuration if available
+    syslog_configs = None
+    try:
+        from src.core.config import ConfigManager
+        config_manager = ConfigManager(args.config)
+        syslog_config_objects = config_manager.load_syslog_configs()
+        if syslog_config_objects:
+            syslog_configs = [
+                {
+                    'host': config.host,
+                    'port': config.port,
+                    'protocol': config.protocol,
+                    'facility': config.facility
+                }
+                for config in syslog_config_objects
+            ]
+    except Exception as e:
+        print(f"Warning: Could not load syslog configuration: {e}")
+    
+    # Setup logging with syslog support
+    try:
+        from src.utils.logging import setup_logging
+        setup_logging(level=args.log_level, log_file=args.log_file, syslog_configs=syslog_configs)
+    except ImportError:
+        # Fallback to basic logging if modular logging not available
+        logging.basicConfig(level=getattr(logging, args.log_level.upper()),
+                          format='%(asctime)s - %(levelname)s - %(message)s')
+        if args.log_file:
+            file_handler = logging.FileHandler(args.log_file)
+            logging.getLogger().addHandler(file_handler)
     
     server = DistributedMeshyMcMapfaceServer(args.config)
     

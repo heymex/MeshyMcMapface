@@ -1,0 +1,43 @@
+[Unit]
+Description=MeshyMcMapface Agent - Meshtastic Network Monitor
+Documentation=https://github.com/heymex/MeshyMcMapface
+After=network.target network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=meshyuser
+Group=meshyuser
+WorkingDirectory=/opt/meshymcmapface
+ExecStart=/usr/bin/python3 /opt/meshymcmapface/mmm-agent-modular.py --config /etc/meshymcmapface/agent.ini --log-level INFO
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/meshymcmapface /var/log/meshymcmapface
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Environment
+Environment=PYTHONPATH=/opt/meshymcmapface/src
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

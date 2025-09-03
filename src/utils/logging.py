@@ -3,9 +3,10 @@ Centralized logging configuration for MeshyMcMapface
 """
 import logging
 import logging.handlers
+import socket
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 
 def setup_logging(
@@ -13,7 +14,8 @@ def setup_logging(
     log_file: Optional[str] = None,
     max_file_size: int = 10 * 1024 * 1024,  # 10MB
     backup_count: int = 5,
-    format_string: Optional[str] = None
+    format_string: Optional[str] = None,
+    syslog_configs: Optional[List[Dict]] = None
 ) -> logging.Logger:
     """
     Set up centralized logging configuration
@@ -24,6 +26,8 @@ def setup_logging(
         max_file_size: Maximum size of log file before rotation
         backup_count: Number of backup files to keep
         format_string: Custom format string
+        syslog_configs: List of syslog configurations
+                       Each config: {'host': str, 'port': int, 'protocol': 'tcp'|'udp', 'facility': str}
     
     Returns:
         Configured logger
@@ -67,7 +71,86 @@ def setup_logging(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     
+    # Syslog handlers (optional)
+    if syslog_configs:
+        for syslog_config in syslog_configs:
+            try:
+                syslog_handler = create_syslog_handler(syslog_config, numeric_level, formatter)
+                if syslog_handler:
+                    logger.addHandler(syslog_handler)
+            except Exception as e:
+                print(f"Warning: Failed to create syslog handler for {syslog_config}: {e}", file=sys.stderr)
+    
     return logger
+
+
+def create_syslog_handler(syslog_config: Dict, level: int, formatter: logging.Formatter) -> Optional[logging.Handler]:
+    """
+    Create a syslog handler with the specified configuration
+    
+    Args:
+        syslog_config: Dictionary with 'host', 'port', 'protocol', 'facility'
+        level: Logging level
+        formatter: Log formatter
+        
+    Returns:
+        Configured syslog handler or None if creation failed
+    """
+    try:
+        host = syslog_config.get('host', 'localhost')
+        port = int(syslog_config.get('port', 514))
+        protocol = syslog_config.get('protocol', 'udp').lower()
+        facility = syslog_config.get('facility', 'local0')
+        
+        # Map facility string to SysLogHandler facility constant
+        facility_map = {
+            'kern': logging.handlers.SysLogHandler.LOG_KERN,
+            'user': logging.handlers.SysLogHandler.LOG_USER,
+            'mail': logging.handlers.SysLogHandler.LOG_MAIL,
+            'daemon': logging.handlers.SysLogHandler.LOG_DAEMON,
+            'auth': logging.handlers.SysLogHandler.LOG_AUTH,
+            'syslog': logging.handlers.SysLogHandler.LOG_SYSLOG,
+            'lpr': logging.handlers.SysLogHandler.LOG_LPR,
+            'news': logging.handlers.SysLogHandler.LOG_NEWS,
+            'uucp': logging.handlers.SysLogHandler.LOG_UUCP,
+            'cron': logging.handlers.SysLogHandler.LOG_CRON,
+            'authpriv': logging.handlers.SysLogHandler.LOG_AUTHPRIV,
+            'ftp': logging.handlers.SysLogHandler.LOG_FTP,
+            'local0': logging.handlers.SysLogHandler.LOG_LOCAL0,
+            'local1': logging.handlers.SysLogHandler.LOG_LOCAL1,
+            'local2': logging.handlers.SysLogHandler.LOG_LOCAL2,
+            'local3': logging.handlers.SysLogHandler.LOG_LOCAL3,
+            'local4': logging.handlers.SysLogHandler.LOG_LOCAL4,
+            'local5': logging.handlers.SysLogHandler.LOG_LOCAL5,
+            'local6': logging.handlers.SysLogHandler.LOG_LOCAL6,
+            'local7': logging.handlers.SysLogHandler.LOG_LOCAL7,
+        }
+        
+        facility_code = facility_map.get(facility.lower(), logging.handlers.SysLogHandler.LOG_LOCAL0)
+        
+        # Create socket type based on protocol
+        if protocol == 'tcp':
+            socktype = socket.SOCK_STREAM
+        elif protocol == 'udp':
+            socktype = socket.SOCK_DGRAM
+        else:
+            raise ValueError(f"Invalid syslog protocol: {protocol}. Must be 'tcp' or 'udp'")
+        
+        # Create syslog handler
+        syslog_handler = logging.handlers.SysLogHandler(
+            address=(host, port),
+            facility=facility_code,
+            socktype=socktype
+        )
+        
+        syslog_handler.setLevel(level)
+        syslog_handler.setFormatter(formatter)
+        
+        return syslog_handler
+        
+    except Exception as e:
+        print(f"Error creating syslog handler: {e}", file=sys.stderr)
+        return None
 
 
 def get_logger(name: str) -> logging.Logger:

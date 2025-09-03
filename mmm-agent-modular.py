@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 from src.agents.base_agent import AgentFactory
-from src.core.config import create_sample_multi_config
+from src.core.config import create_sample_multi_config, ConfigManager
 from src.utils.logging import setup_logging
 
 
@@ -33,9 +33,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup logging
-    setup_logging(level=args.log_level, log_file=args.log_file)
-    
     if args.create_config:
         create_sample_multi_config(args.config)
         return
@@ -44,6 +41,27 @@ def main():
         print(f"Configuration file {args.config} not found.")
         print("Use --create-config to generate a sample configuration.")
         return
+    
+    # Load syslog configuration if available
+    syslog_configs = None
+    try:
+        config_manager = ConfigManager(args.config)
+        syslog_config_objects = config_manager.load_syslog_configs()
+        if syslog_config_objects:
+            syslog_configs = [
+                {
+                    'host': config.host,
+                    'port': config.port,
+                    'protocol': config.protocol,
+                    'facility': config.facility
+                }
+                for config in syslog_config_objects
+            ]
+    except Exception as e:
+        print(f"Warning: Could not load syslog configuration: {e}")
+    
+    # Setup logging with syslog support
+    setup_logging(level=args.log_level, log_file=args.log_file, syslog_configs=syslog_configs)
     
     try:
         # Create agent

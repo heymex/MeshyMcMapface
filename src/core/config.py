@@ -65,6 +65,15 @@ class MeshtasticConfig:
     ble_address: Optional[str] = None
 
 
+@dataclass
+class SyslogConfig:
+    """Configuration for a single syslog destination"""
+    host: str
+    port: int = 514
+    protocol: str = 'udp'  # 'tcp' or 'udp'
+    facility: str = 'local0'
+
+
 class ConfigManager:
     """Manages loading and validation of all configurations"""
     
@@ -138,6 +147,27 @@ class ConfigManager:
             )
         except Exception as e:
             raise ValueError(f"Error loading Meshtastic configuration: {e}")
+    
+    def load_syslog_configs(self) -> List[SyslogConfig]:
+        """Load syslog configurations"""
+        syslog_configs = []
+        
+        for section_name in self.config.sections():
+            if section_name.startswith('syslog_'):
+                try:
+                    section = dict(self.config.items(section_name))
+                    syslog_config = SyslogConfig(
+                        host=section['host'],
+                        port=int(section.get('port', 514)),
+                        protocol=section.get('protocol', 'udp').lower(),
+                        facility=section.get('facility', 'local0').lower()
+                    )
+                    syslog_configs.append(syslog_config)
+                except Exception as e:
+                    self.logger.error(f"Error loading syslog config from {section_name}: {e}")
+                    continue
+        
+        return syslog_configs
     
     def load_server_configs(self) -> Dict[str, ServerConfig]:
         """Load all server configurations"""
@@ -276,6 +306,21 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         'interval_minutes': '60',
         'hop_limit': '7',
         'delay_between_traces': '3.0'
+    }
+    
+    # Syslog configuration examples (commented out by default)
+    config['# syslog_primary'] = {
+        '# host': 'syslog.example.com',
+        '# port': '514',
+        '# protocol': 'udp',
+        '# facility': 'local0'
+    }
+    
+    config['# syslog_backup'] = {
+        '# host': 'backup-syslog.example.com', 
+        '# port': '1514',
+        '# protocol': 'tcp',
+        '# facility': 'local1'
     }
     
     with open(filename, 'w') as f:

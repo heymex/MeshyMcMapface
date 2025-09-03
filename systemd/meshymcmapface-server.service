@@ -1,0 +1,50 @@
+[Unit]
+Description=MeshyMcMapface Server - Central Data Collection
+Documentation=https://github.com/heymex/MeshyMcMapface
+After=network.target network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=meshyuser
+Group=meshyuser
+WorkingDirectory=/opt/meshymcmapface
+ExecStart=/usr/bin/python3 /opt/meshymcmapface/mmm-server.py --config /etc/meshymcmapface/server.ini
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/meshymcmapface /var/log/meshymcmapface /var/lib/meshymcmapface
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=100%
+
+# Network access for web dashboard
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=10.0.0.0/8
+IPAddressAllow=172.16.0.0/12
+IPAddressAllow=192.168.0.0/16
+
+# Environment
+Environment=PYTHONPATH=/opt/meshymcmapface/src
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

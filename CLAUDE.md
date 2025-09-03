@@ -20,8 +20,28 @@ python3 mmm-server.py --create-config
 # Run modular agent (main application)
 python3 mmm-agent-modular.py --config multi_agent_config.ini --log-level INFO --log-file agent.log
 
-# Run server
-python3 mmm-server.py --config server_config.ini
+# Run server with logging options
+python3 mmm-server.py --config server_config.ini --log-level INFO --log-file server.log
+```
+
+### SystemD Service Installation
+```bash
+# Install as system services
+sudo ./install-service.sh
+
+# Service management
+sudo systemctl enable meshymcmapface-agent
+sudo systemctl start meshymcmapface-agent
+sudo systemctl enable meshymcmapface-server
+sudo systemctl start meshymcmapface-server
+
+# Check service status
+sudo systemctl status meshymcmapface-agent
+sudo systemctl status meshymcmapface-server
+
+# View service logs
+sudo journalctl -u meshymcmapface-agent -f
+sudo journalctl -u meshymcmapface-server -f
 ```
 
 ### Development Tools (in _archive/)
@@ -95,11 +115,37 @@ Agents can report to multiple servers simultaneously with different configuratio
 - Multiple server configurations with priorities
 - Route discovery settings
 - Priority node monitoring
+- Syslog destinations for remote logging
 
 **Server Config** (`server_config.ini`):
 - Server binding and database settings
 - Agent API keys for authentication
 - Web dashboard configuration
+- Syslog destinations for remote logging
+
+### Syslog Configuration
+
+Both agent and server support logging to remote syslog hosts:
+
+```ini
+# Example syslog configurations in config files
+[syslog_primary]
+host = syslog.example.com
+port = 514
+protocol = udp
+facility = local0
+
+[syslog_backup]
+host = backup-syslog.example.com
+port = 1514
+protocol = tcp
+facility = local1
+```
+
+**Supported Options:**
+- **Protocol**: `tcp` or `udp`
+- **Port**: Any valid port (default: 514)
+- **Facility**: `kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, `authpriv`, `ftp`, `local0`-`local7`
 
 ## Web Dashboard
 
@@ -172,3 +218,24 @@ The modular architecture enables easy extension for additional mesh technologies
 - Database utilities, test scripts, debug tools
 - Development and research code
 - Design documents and schemas
+
+**SystemD Service Files**:
+- `systemd/` - Service definition files for system installation
+- `install-service.sh` - Automated installation script
+
+## SystemD Service Deployment
+
+The system includes full systemd integration for production deployment:
+
+### Installation Process
+1. Run `sudo ./install-service.sh` to install services
+2. Configure settings in `/etc/meshymcmapface/`
+3. Enable and start services
+4. Monitor via journalctl
+
+### Service Features
+- **Security hardening**: Restricted permissions, private temp, read-only system
+- **Resource limits**: Memory and CPU quotas
+- **Auto-restart**: Automatic restart on failure with backoff
+- **Logging integration**: Full journalctl support + optional syslog
+- **Network security**: IP restrictions for server service
