@@ -3116,6 +3116,19 @@ class DistributedMeshyMcMapfaceServer:
             setTimeout(loadNodes, 1000); // Add small delay
         });
         
+        // Robust date parsing function
+        function parseTimestamp(timestamp) {
+            if (!timestamp) return null;
+            
+            // If timestamp already has timezone info, use it as-is
+            if (timestamp.includes('+') || timestamp.includes('Z')) {
+                return new Date(timestamp);
+            }
+            
+            // Otherwise, assume UTC and add 'Z'
+            return new Date(timestamp + 'Z');
+        }
+
         // Theme toggle functions
         function toggleTheme() {
             const html = document.documentElement;
@@ -3288,7 +3301,7 @@ class DistributedMeshyMcMapfaceServer:
             document.getElementById('modalHops').textContent = 
                 data.hops_away !== null ? data.hops_away : '-';
             document.getElementById('modalLastSeen').textContent = 
-                data.updated_at ? new Date(data.updated_at + 'Z').toLocaleString() : '-';
+                data.updated_at ? parseTimestamp(data.updated_at).toLocaleString() : '-';
             
             // Packet stats
             document.getElementById('modalTotalPackets').textContent = data.packet_stats.total_packets || '0';
@@ -3314,7 +3327,7 @@ class DistributedMeshyMcMapfaceServer:
                 const rssi = neighbor.avg_rssi !== null ? `${Math.round(neighbor.avg_rssi)} dBm` : '-';
                 const snr = neighbor.avg_snr !== null ? `${Math.round(neighbor.avg_snr)} dB` : '-';
                 const lastContact = neighbor.last_contact ? 
-                    new Date(neighbor.last_contact + 'Z').toLocaleString() : '-';
+                    parseTimestamp(neighbor.last_contact).toLocaleString() : '-';
                 
                 html += `
                     <div class="neighbor-card" onclick="showNodeDetails('${neighbor.node_id}')">
@@ -3351,7 +3364,7 @@ class DistributedMeshyMcMapfaceServer:
             const batteryData = telemetryData
                 .filter(t => t.payload && typeof t.payload.battery_level === 'number')
                 .map(t => ({
-                    timestamp: new Date(t.timestamp + 'Z'),
+                    timestamp: parseTimestamp(t.timestamp),
                     battery: t.payload.battery_level
                 }))
                 .sort((a, b) => a.timestamp - b.timestamp);
@@ -4550,6 +4563,19 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
+        // Robust date parsing function
+        function parseTimestamp(timestamp) {
+            if (!timestamp) return null;
+            
+            // If timestamp already has timezone info, use it as-is
+            if (timestamp.includes('+') || timestamp.includes('Z')) {
+                return new Date(timestamp);
+            }
+            
+            // Otherwise, assume UTC and add 'Z'
+            return new Date(timestamp + 'Z');
+        }
+
         // Initialize theme toggle text on load
         window.addEventListener('DOMContentLoaded', () => {
             const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
@@ -4729,7 +4755,7 @@ class DistributedMeshyMcMapfaceServer:
             document.getElementById('modalHops').textContent = 
                 data.hops_away !== null ? data.hops_away : '-';
             document.getElementById('modalLastSeen').textContent = 
-                data.updated_at ? new Date(data.updated_at + 'Z').toLocaleString() : '-';
+                data.updated_at ? parseTimestamp(data.updated_at).toLocaleString() : '-';
             
             document.getElementById('modalTotalPackets').textContent = data.packet_stats.total_packets || '0';
             document.getElementById('modalSeeingAgents').textContent = data.packet_stats.seeing_agents || '0';
@@ -4751,7 +4777,7 @@ class DistributedMeshyMcMapfaceServer:
                 const rssi = neighbor.avg_rssi !== null ? `${Math.round(neighbor.avg_rssi)} dBm` : '-';
                 const snr = neighbor.avg_snr !== null ? `${Math.round(neighbor.avg_snr)} dB` : '-';
                 const lastContact = neighbor.last_contact ? 
-                    new Date(neighbor.last_contact + 'Z').toLocaleString() : '-';
+                    parseTimestamp(neighbor.last_contact).toLocaleString() : '-';
                 
                 html += `
                     <div class="neighbor-card" onclick="showNodeDetails('${neighbor.node_id}')">
@@ -4786,7 +4812,7 @@ class DistributedMeshyMcMapfaceServer:
             const batteryData = telemetryData
                 .filter(t => t.payload && typeof t.payload.battery_level === 'number')
                 .map(t => ({
-                    timestamp: new Date(t.timestamp + 'Z'),
+                    timestamp: parseTimestamp(t.timestamp),
                     battery: t.payload.battery_level
                 }))
                 .sort((a, b) => a.timestamp - b.timestamp);
