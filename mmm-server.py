@@ -3214,7 +3214,7 @@ class DistributedMeshyMcMapfaceServer:
                             <div class="node-details-section">
                                 <h3>Recent Telemetry</h3>
                                 <canvas id="telemetryChart" width="600" height="200"></canvas>
-                                <p class="chart-info">Battery level and environmental data over time</p>
+                                <p class="chart-info">Battery level, voltage, and utilization metrics (current or historical data)</p>
                             </div>
                             <div class="node-details-section">
                                 <h3>Direct Neighbors</h3>
@@ -3312,7 +3312,7 @@ class DistributedMeshyMcMapfaceServer:
             populateNeighbors(data.neighbors || []);
             
             // Create telemetry chart
-            createTelemetryChart(data.telemetry || []);
+            createTelemetryChart(data.telemetry || [], data);
         }
         
         function populateNeighbors(neighbors) {
@@ -3345,18 +3345,77 @@ class DistributedMeshyMcMapfaceServer:
             container.innerHTML = html;
         }
         
-        function createTelemetryChart(telemetryData) {
+        function drawCurrentMetrics(ctx, canvas, nodeData) {
+            const padding = 40;
+            const chartWidth = canvas.width - 2 * padding;
+            const chartHeight = canvas.height - 2 * padding;
+            
+            // Collect available metrics
+            const metrics = [];
+            if (nodeData.battery_level != null) metrics.push({label: 'Battery', value: nodeData.battery_level, unit: '%', color: '#4CAF50', max: 100});
+            if (nodeData.voltage != null) metrics.push({label: 'Voltage', value: nodeData.voltage, unit: 'V', color: '#2196F3', max: 5});
+            if (nodeData.channel_utilization != null) metrics.push({label: 'Channel Util', value: nodeData.channel_utilization, unit: '%', color: '#FF9800', max: 100});
+            if (nodeData.air_util_tx != null) metrics.push({label: 'Air Util TX', value: nodeData.air_util_tx, unit: '%', color: '#9C27B0', max: 100});
+            
+            if (metrics.length === 0) return;
+            
+            // Draw title
+            ctx.fillStyle = 'var(--text-primary)';
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Current Node Metrics', canvas.width / 2, 25);
+            
+            // Calculate bar dimensions
+            const barHeight = 30;
+            const barSpacing = 15;
+            const totalBarsHeight = metrics.length * barHeight + (metrics.length - 1) * barSpacing;
+            const startY = (canvas.height - totalBarsHeight) / 2;
+            
+            metrics.forEach((metric, i) => {
+                const y = startY + i * (barHeight + barSpacing);
+                const barWidth = (metric.value / metric.max) * chartWidth;
+                
+                // Draw background bar
+                ctx.fillStyle = 'var(--bg-tertiary)';
+                ctx.fillRect(padding, y, chartWidth, barHeight);
+                
+                // Draw value bar
+                ctx.fillStyle = metric.color;
+                ctx.fillRect(padding, y, Math.max(0, barWidth), barHeight);
+                
+                // Draw border
+                ctx.strokeStyle = 'var(--border-color)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(padding, y, chartWidth, barHeight);
+                
+                // Draw label and value text
+                ctx.fillStyle = 'var(--text-primary)';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'left';
+                ctx.fillText(metric.label, padding + 5, y + barHeight/2 + 4);
+                
+                ctx.textAlign = 'right';
+                ctx.fillText(`${metric.value}${metric.unit}`, padding + chartWidth - 5, y + barHeight/2 + 4);
+            });
+        }
+        
+        function createTelemetryChart(telemetryData, nodeData) {
             const canvas = document.getElementById('telemetryChart');
             const ctx = canvas.getContext('2d');
             
             // Clear canvas
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // If no historical telemetry but we have current node metrics, show them
             if (telemetryData.length === 0) {
-                ctx.fillStyle = 'var(--text-secondary)';
-                ctx.font = '14px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('No telemetry data available', canvas.width / 2, canvas.height / 2);
+                if (nodeData && (nodeData.battery_level || nodeData.voltage || nodeData.channel_utilization || nodeData.air_util_tx)) {
+                    drawCurrentMetrics(ctx, canvas, nodeData);
+                } else {
+                    ctx.fillStyle = 'var(--text-secondary)';
+                    ctx.font = '14px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('No telemetry data available', canvas.width / 2, canvas.height / 2);
+                }
                 return;
             }
             
@@ -4675,7 +4734,7 @@ class DistributedMeshyMcMapfaceServer:
                             <div class="node-details-section">
                                 <h3>Recent Telemetry</h3>
                                 <canvas id="telemetryChart" width="600" height="200"></canvas>
-                                <p class="chart-info">Battery level and environmental data over time</p>
+                                <p class="chart-info">Battery level, voltage, and utilization metrics (current or historical data)</p>
                             </div>
                             <div class="node-details-section">
                                 <h3>Direct Neighbors</h3>
@@ -4762,7 +4821,7 @@ class DistributedMeshyMcMapfaceServer:
             document.getElementById('modalAgentLocations').textContent = data.packet_stats.agent_locations || '-';
             
             populateNeighbors(data.neighbors || []);
-            createTelemetryChart(data.telemetry || []);
+            createTelemetryChart(data.telemetry || [], data);
         }
         
         function populateNeighbors(neighbors) {
@@ -4795,17 +4854,76 @@ class DistributedMeshyMcMapfaceServer:
             container.innerHTML = html;
         }
         
-        function createTelemetryChart(telemetryData) {
+        function drawCurrentMetrics(ctx, canvas, nodeData) {
+            const padding = 40;
+            const chartWidth = canvas.width - 2 * padding;
+            const chartHeight = canvas.height - 2 * padding;
+            
+            // Collect available metrics
+            const metrics = [];
+            if (nodeData.battery_level != null) metrics.push({label: 'Battery', value: nodeData.battery_level, unit: '%', color: '#4CAF50', max: 100});
+            if (nodeData.voltage != null) metrics.push({label: 'Voltage', value: nodeData.voltage, unit: 'V', color: '#2196F3', max: 5});
+            if (nodeData.channel_utilization != null) metrics.push({label: 'Channel Util', value: nodeData.channel_utilization, unit: '%', color: '#FF9800', max: 100});
+            if (nodeData.air_util_tx != null) metrics.push({label: 'Air Util TX', value: nodeData.air_util_tx, unit: '%', color: '#9C27B0', max: 100});
+            
+            if (metrics.length === 0) return;
+            
+            // Draw title
+            ctx.fillStyle = 'var(--text-primary)';
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Current Node Metrics', canvas.width / 2, 25);
+            
+            // Calculate bar dimensions
+            const barHeight = 30;
+            const barSpacing = 15;
+            const totalBarsHeight = metrics.length * barHeight + (metrics.length - 1) * barSpacing;
+            const startY = (canvas.height - totalBarsHeight) / 2;
+            
+            metrics.forEach((metric, i) => {
+                const y = startY + i * (barHeight + barSpacing);
+                const barWidth = (metric.value / metric.max) * chartWidth;
+                
+                // Draw background bar
+                ctx.fillStyle = 'var(--bg-tertiary)';
+                ctx.fillRect(padding, y, chartWidth, barHeight);
+                
+                // Draw value bar
+                ctx.fillStyle = metric.color;
+                ctx.fillRect(padding, y, Math.max(0, barWidth), barHeight);
+                
+                // Draw border
+                ctx.strokeStyle = 'var(--border-color)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(padding, y, chartWidth, barHeight);
+                
+                // Draw label and value text
+                ctx.fillStyle = 'var(--text-primary)';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'left';
+                ctx.fillText(metric.label, padding + 5, y + barHeight/2 + 4);
+                
+                ctx.textAlign = 'right';
+                ctx.fillText(`${metric.value}${metric.unit}`, padding + chartWidth - 5, y + barHeight/2 + 4);
+            });
+        }
+        
+        function createTelemetryChart(telemetryData, nodeData) {
             const canvas = document.getElementById('telemetryChart');
             const ctx = canvas.getContext('2d');
             
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // If no historical telemetry but we have current node metrics, show them
             if (telemetryData.length === 0) {
-                ctx.fillStyle = 'var(--text-secondary)';
-                ctx.font = '14px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('No telemetry data available', canvas.width / 2, canvas.height / 2);
+                if (nodeData && (nodeData.battery_level || nodeData.voltage || nodeData.channel_utilization || nodeData.air_util_tx)) {
+                    drawCurrentMetrics(ctx, canvas, nodeData);
+                } else {
+                    ctx.fillStyle = 'var(--text-secondary)';
+                    ctx.font = '14px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('No telemetry data available', canvas.width / 2, canvas.height / 2);
+                }
                 return;
             }
             
