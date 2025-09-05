@@ -1851,6 +1851,7 @@ class DistributedMeshyMcMapfaceServer:
         .filter-controls label { font-weight: bold; }
         .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; }
         .role-router { background: #f44336; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .role-router-late { background: #d32f2f; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
         .role-router-client { background: #FF9800; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
         .role-client { background: #2196F3; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
         .role-client-mute { background: #4CAF50; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
@@ -1934,6 +1935,9 @@ class DistributedMeshyMcMapfaceServer:
                     </button>
                     <button class="filter-btn" data-filter="routers" onclick="toggleFilter('routers')">
                         Routers <span class="filter-counter" id="count-routers">0</span>
+                    </button>
+                    <button class="filter-btn" data-filter="router-late" onclick="toggleFilter('router-late')">
+                        Router Late <span class="filter-counter" id="count-router-late">0</span>
                     </button>
                     <button class="filter-btn" data-filter="routers-no-gps" onclick="toggleFilter('routers-no-gps')">
                         Routers w/o GPS <span class="filter-counter" id="count-routers-no-gps">0</span>
@@ -2120,6 +2124,9 @@ class DistributedMeshyMcMapfaceServer:
                     } else if (roleValue.includes('CLIENT_MUTE') || roleValue.includes('CLIENTMUTE')) {
                         roleClass = 'role-client-mute';
                         roleName = 'CLIENT_MUTE';
+                    } else if (roleValue.includes('ROUTER_LATE')) {
+                        roleClass = 'role-router-late';
+                        roleName = 'ROUTER_LATE';
                     } else if (roleValue.includes('ROUTER') && !roleValue.includes('CLIENT')) {
                         roleClass = 'role-router';
                         roleName = 'ROUTER';
@@ -2464,6 +2471,7 @@ class DistributedMeshyMcMapfaceServer:
                 // Handle string values
                 if (roleStr.includes('ROUTER_CLIENT') || roleStr.includes('ROUTERCLIENT')) return 'ROUTER_CLIENT';
                 if (roleStr.includes('CLIENT_MUTE') || roleStr.includes('CLIENTMUTE')) return 'CLIENT_MUTE';
+                if (roleStr.includes('ROUTER_LATE')) return 'ROUTER_LATE';
                 if (roleStr.includes('ROUTER') && !roleStr.includes('CLIENT')) return 'ROUTER';
                 if (roleStr.includes('CLIENT') && !roleStr.includes('MUTE')) return 'CLIENT';
                 if (roleStr.includes('REPEATER')) return 'REPEATER';
@@ -2490,6 +2498,9 @@ class DistributedMeshyMcMapfaceServer:
                 case 'router-client':
                     return normalizedRole === 'ROUTER_CLIENT';
                     
+                case 'router-late':
+                    return normalizedRole === 'ROUTER_LATE';
+                    
                 case 'has-gps':
                     return hasGPS;
                     
@@ -2510,6 +2521,7 @@ class DistributedMeshyMcMapfaceServer:
                 'all': allNodes.length,
                 'routers': 0,
                 'routers-no-gps': 0,
+                'router-late': 0,
                 'clients': 0,
                 'client-mute': 0,
                 'router-client': 0,
@@ -2521,6 +2533,7 @@ class DistributedMeshyMcMapfaceServer:
             allNodes.forEach(node => {
                 if (nodeMatchesFilter(node, 'routers')) counts['routers']++;
                 if (nodeMatchesFilter(node, 'routers-no-gps')) counts['routers-no-gps']++;
+                if (nodeMatchesFilter(node, 'router-late')) counts['router-late']++;
                 if (nodeMatchesFilter(node, 'clients')) counts['clients']++;
                 if (nodeMatchesFilter(node, 'client-mute')) counts['client-mute']++;
                 if (nodeMatchesFilter(node, 'router-client')) counts['router-client']++;
@@ -2549,8 +2562,10 @@ class DistributedMeshyMcMapfaceServer:
                     switch(f) {
                         case 'routers': return 'Routers';
                         case 'routers-no-gps': return 'Routers w/o GPS';
+                        case 'router-late': return 'Router Late';
                         case 'clients': return 'Clients';
                         case 'client-mute': return 'Client Mute';
+                        case 'router-client': return 'Router Client';
                         case 'has-gps': return 'Has GPS';
                         case 'high-battery': return 'High Battery';
                         case 'low-battery': return 'Low Battery';
