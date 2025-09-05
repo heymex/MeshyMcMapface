@@ -1051,7 +1051,7 @@ class DistributedMeshyMcMapfaceServer:
                        COALESCE(u.battery_level, n.battery_level) as battery_level,
                        n.position_lat, n.position_lon, n.rssi, n.snr, n.updated_at,
                        u.voltage, u.channel_utilization, u.air_util_tx, u.uptime_seconds, 
-                       u.hops_away, u.firmware_version, u.region, u.modem_preset
+                       u.hops_away
                 FROM nodes n
                 LEFT JOIN user_info u ON n.node_id = u.node_id
                 WHERE n.node_id = ?
@@ -1157,9 +1157,9 @@ class DistributedMeshyMcMapfaceServer:
                 'air_util_tx': node_data[14],
                 'uptime_seconds': node_data[15],
                 'hops_away': node_data[16],
-                'firmware_version': node_data[17],
-                'region': node_data[18],
-                'modem_preset': node_data[19],
+                'firmware_version': None,  # Not available in current schema
+                'region': None,  # Not available in current schema
+                'modem_preset': None,  # Not available in current schema
                 'packet_stats': {
                     'total_packets': packet_stats[0] if packet_stats else 0,
                     'seeing_agents': packet_stats[1] if packet_stats else 0,
