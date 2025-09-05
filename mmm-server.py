@@ -1350,24 +1350,75 @@ class DistributedMeshyMcMapfaceServer:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        /* CSS Custom Properties for Light/Dark themes */
+        :root {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: white;
+            --bg-tertiary: #f8f9fa;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --border-color: #ddd;
+            --shadow-color: rgba(0,0,0,0.1);
+            --accent-color: #2196F3;
+            --accent-hover: #e3f2fd;
+            --success-color: #4CAF50;
+            --error-color: #f44336;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-tertiary: #2d2d2d;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --border-color: #404040;
+            --shadow-color: rgba(0,0,0,0.3);
+            --accent-color: #64b5f6;
+            --accent-hover: #1e3a5f;
+            --success-color: #66bb6a;
+            --error-color: #ef5350;
+        }
+
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-primary); color: var(--text-primary); }
         .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
-        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
-        .stat-number { font-size: 2em; font-weight: bold; color: #2196F3; }
-        .stat-label { color: #666; margin-top: 5px; }
-        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .section h2 { margin-top: 0; color: #333; }
+        .stat-card { background: var(--bg-secondary); padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px var(--shadow-color); text-align: center; }
+        .stat-number { font-size: 2em; font-weight: bold; color: var(--accent-color); }
+        .stat-label { color: var(--text-secondary); margin-top: 5px; }
+        .section { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
+        .section h2 { margin-top: 0; color: var(--text-primary); }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-        .table th { background: #f8f9fa; }
-        .status-active { color: #4CAF50; font-weight: bold; }
-        .status-inactive { color: #f44336; }
-        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
-        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
-        .nav a:hover { background: #e3f2fd; }
+        .table th, .table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+        .table th { background: var(--bg-tertiary); }
+        .status-active { color: var(--success-color); font-weight: bold; }
+        .status-inactive { color: var(--error-color); }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; }
+        .nav a { color: var(--accent-color); text-decoration: none; padding: 10px 20px; background: var(--bg-secondary); border-radius: 4px; }
+        .nav a:hover { background: var(--accent-hover); }
+        
+        /* Dark mode toggle */
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: auto;
+        }
+        .theme-toggle:hover {
+            background: var(--accent-hover);
+        }
     </style>
+    <script>
+        // Theme initialization - must run before page renders to avoid flash
+        (function() {
+            const theme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -1382,6 +1433,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/packets">Packets</a>
             <a href="/nodes">Nodes</a>
             <a href="/map">Map</a>
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle">🌙 Dark</button>
         </div>
         
         <div class="stats-grid" id="stats-grid">
@@ -1531,6 +1583,30 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
+        // Theme toggle functions
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeToggleText(newTheme);
+        }
+        
+        function updateThemeToggleText(theme) {
+            const toggle = document.getElementById('theme-toggle');
+            if (toggle) {
+                toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+            }
+        }
+        
+        // Initialize theme toggle text on load
+        window.addEventListener('DOMContentLoaded', () => {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            updateThemeToggleText(currentTheme);
+        });
+        
         // Initial load
         loadStats();
         loadAgents();
@@ -1558,20 +1634,71 @@ class DistributedMeshyMcMapfaceServer:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        /* CSS Custom Properties for theming */
+        :root {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: white;
+            --bg-tertiary: #f8f9fa;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --accent-color: #2196F3;
+            --accent-hover: #e3f2fd;
+            --border-color: #ddd;
+            --shadow-color: rgba(0,0,0,0.1);
+            --success-color: #4CAF50;
+            --error-color: #f44336;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-tertiary: #2a2a2a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --accent-color: #64b5f6;
+            --accent-hover: #1a237e;
+            --border-color: #404040;
+            --shadow-color: rgba(0,0,0,0.3);
+            --success-color: #81c784;
+            --error-color: #e57373;
+        }
+
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-primary); color: var(--text-primary); }
         .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
+        .section { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        .table th { background: #f8f9fa; }
-        .status-active { color: #4CAF50; font-weight: bold; }
-        .status-inactive { color: #f44336; }
-        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
-        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
-        .nav a:hover { background: #e3f2fd; }
-        .nav a.active { background: #2196F3; color: white; }
+        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+        .table th { background: var(--bg-tertiary); }
+        .status-active { color: var(--success-color); font-weight: bold; }
+        .status-inactive { color: var(--error-color); }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; }
+        .nav a { color: var(--accent-color); text-decoration: none; padding: 10px 20px; background: var(--bg-secondary); border-radius: 4px; }
+        .nav a:hover { background: var(--accent-hover); }
+        .nav a.active { background: var(--accent-color); color: white; }
+        
+        /* Dark mode toggle */
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: auto;
+        }
+        .theme-toggle:hover {
+            background: var(--accent-hover);
+        }
     </style>
+    <script>
+        // Theme initialization - must run before page renders to avoid flash
+        (function() {
+            const theme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -1586,6 +1713,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/packets">Packets</a>
             <a href="/nodes">Nodes</a>
             <a href="/map">Map</a>
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle">🌙 Dark</button>
         </div>
         
         <div class="section">
@@ -1653,6 +1781,30 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
+        // Theme toggle functions
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeToggleText(newTheme);
+        }
+        
+        function updateThemeToggleText(theme) {
+            const toggle = document.getElementById('theme-toggle');
+            if (toggle) {
+                toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+            }
+        }
+        
+        // Initialize theme toggle text on load
+        window.addEventListener('DOMContentLoaded', () => {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            updateThemeToggleText(currentTheme);
+        });
+        
         // Initial load
         loadAllAgents();
         
@@ -1674,25 +1826,62 @@ class DistributedMeshyMcMapfaceServer:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        /* CSS Custom Properties for theming */
+        :root {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: white;
+            --bg-tertiary: #f8f9fa;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --accent-color: #2196F3;
+            --accent-hover: #e3f2fd;
+            --border-color: #ddd;
+            --shadow-color: rgba(0,0,0,0.1);
+            --success-color: #4CAF50;
+            --error-color: #f44336;
+            --warning-color: #FF9800;
+            --purple-color: #9C27B0;
+            --gray-color: #607D8B;
+            --muted-color: #9E9E9E;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-tertiary: #2a2a2a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --accent-color: #64b5f6;
+            --accent-hover: #1a237e;
+            --border-color: #404040;
+            --shadow-color: rgba(0,0,0,0.3);
+            --success-color: #81c784;
+            --error-color: #e57373;
+            --warning-color: #ffb74d;
+            --purple-color: #ba68c8;
+            --gray-color: #90a4ae;
+            --muted-color: #bdbdbd;
+        }
+
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-primary); color: var(--text-primary); }
         .container { max-width: 1200px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
+        .section { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
         .table { width: 100%; border-collapse: collapse; }
-        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        .table th { background: #f8f9fa; }
-        .status-active { color: #4CAF50; font-weight: bold; }
-        .status-inactive { color: #f44336; }
-        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
-        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
-        .nav a:hover { background: #e3f2fd; }
-        .nav a.active { background: #2196F3; color: white; }
-        .battery-high { color: #4CAF50; }
-        .battery-medium { color: #FF9800; }
-        .battery-low { color: #f44336; }
-        .packet-details-table { margin-top: 15px; border: 1px solid #ddd; border-radius: 4px; }
-        .packet-type { background: #e3f2fd; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; }
-        .clickable { cursor: pointer; color: #2196F3; text-decoration: underline; }
+        .table th, .table td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+        .table th { background: var(--bg-tertiary); }
+        .status-active { color: var(--success-color); font-weight: bold; }
+        .status-inactive { color: var(--error-color); }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; }
+        .nav a { color: var(--accent-color); text-decoration: none; padding: 10px 20px; background: var(--bg-secondary); border-radius: 4px; }
+        .nav a:hover { background: var(--accent-hover); }
+        .nav a.active { background: var(--accent-color); color: white; }
+        .battery-high { color: var(--success-color); }
+        .battery-medium { color: var(--warning-color); }
+        .battery-low { color: var(--error-color); }
+        .packet-details-table { margin-top: 15px; border: 1px solid var(--border-color); border-radius: 4px; }
+        .packet-type { background: var(--accent-hover); padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; color: var(--text-primary); }
+        .clickable { cursor: pointer; color: var(--accent-color); text-decoration: underline; }
         .clickable:hover { color: #1976D2; }
         .packet-section { background: #f8f9fa; padding: 15px; border-radius: 4px; margin-top: 10px; }
         .filter-controls { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; }
@@ -1719,7 +1908,29 @@ class DistributedMeshyMcMapfaceServer:
         .filter-counter { background: #666; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.75em; margin-left: 5px; }
         .clear-filters { background: #f44336; color: white; border: none; }
         .clear-filters:hover { background: #d32f2f; }
+        
+        /* Dark mode toggle */
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: auto;
+        }
+        .theme-toggle:hover {
+            background: var(--accent-hover);
+        }
     </style>
+    <script>
+        // Theme initialization - must run before page renders to avoid flash
+        (function() {
+            const theme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -1734,6 +1945,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/packets">Packets</a>
             <a href="/nodes" class="active">Nodes</a>
             <a href="/map">Map</a>
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle">🌙 Dark</button>
         </div>
         
         <div class="section">
@@ -2427,6 +2639,30 @@ class DistributedMeshyMcMapfaceServer:
             setTimeout(loadNodes, 1000); // Add small delay
         });
         
+        // Theme toggle functions
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeToggleText(newTheme);
+        }
+        
+        function updateThemeToggleText(theme) {
+            const toggle = document.getElementById('theme-toggle');
+            if (toggle) {
+                toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+            }
+        }
+        
+        // Initialize theme toggle text on load
+        window.addEventListener('DOMContentLoaded', () => {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            updateThemeToggleText(currentTheme);
+        });
+        
         // Refresh every 30 seconds
         setInterval(loadNodes, 30000);
     </script>
@@ -2445,7 +2681,36 @@ class DistributedMeshyMcMapfaceServer:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        /* CSS Custom Properties for theming */
+        :root {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: white;
+            --bg-tertiary: #f8f9fa;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --accent-color: #2196F3;
+            --accent-hover: #e3f2fd;
+            --border-color: #ddd;
+            --shadow-color: rgba(0,0,0,0.1);
+            --success-color: #4CAF50;
+            --error-color: #f44336;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-tertiary: #2a2a2a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --accent-color: #64b5f6;
+            --accent-hover: #1a237e;
+            --border-color: #404040;
+            --shadow-color: rgba(0,0,0,0.3);
+            --success-color: #81c784;
+            --error-color: #e57373;
+        }
+
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-primary); color: var(--text-primary); }
         .container { max-width: 1400px; margin: 0 auto; }
         .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
