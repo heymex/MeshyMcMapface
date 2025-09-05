@@ -3835,6 +3835,223 @@ class DistributedMeshyMcMapfaceServer:
         .theme-toggle:hover {
             background: var(--accent-hover);
         }
+        
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        
+        .modal-content {
+            background-color: var(--bg-secondary);
+            margin: 2% auto;
+            padding: 0;
+            border: none;
+            width: 90%;
+            max-width: 900px;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            max-height: 90vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .modal-header {
+            padding: 20px 30px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-header h2 {
+            margin: 0;
+            color: var(--text-primary);
+        }
+        
+        .close {
+            color: var(--text-secondary);
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+        }
+        
+        .close:hover {
+            color: var(--text-primary);
+        }
+        
+        .modal-body {
+            padding: 30px;
+            overflow-y: auto;
+            flex: 1;
+        }
+        
+        .node-details-loading {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .spinner {
+            border: 4px solid var(--border-color);
+            border-top: 4px solid var(--accent-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .node-details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .node-info-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .node-info-table td {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .node-info-table td:first-child {
+            width: 40%;
+            color: var(--text-secondary);
+        }
+        
+        .node-info-table td:last-child {
+            color: var(--text-primary);
+        }
+        
+        .node-details-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+        
+        .node-details-section h3 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            color: var(--text-primary);
+        }
+        
+        .packet-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+        
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .stat-label {
+            display: block;
+            font-size: 0.9em;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            display: block;
+            font-size: 1.4em;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+        
+        .neighbors-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        
+        .neighbor-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .neighbor-card:hover {
+            border-color: var(--accent-color);
+            box-shadow: 0 2px 8px var(--shadow-color);
+        }
+        
+        .neighbor-name {
+            font-weight: bold;
+            color: var(--text-primary);
+            margin-bottom: 10px;
+        }
+        
+        .neighbor-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5px;
+            font-size: 0.9em;
+            color: var(--text-secondary);
+        }
+        
+        .chart-info {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        
+        /* Role styling */
+        .role-client { color: #4CAF50; }
+        .role-client-mute { color: #FF9800; }
+        .role-router { color: #2196F3; }
+        .role-router-client { color: #9C27B0; }
+        .role-router-late { color: #F44336; }
+        .role-repeater { color: #795548; }
+        .role-tracker { color: #607D8B; }
+        .role-unknown { color: var(--text-secondary); }
+        
+        @media (max-width: 768px) {
+            .node-details-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .packet-stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+            
+            .neighbors-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .modal-content {
+                width: 95%;
+                margin: 5% auto;
+            }
+        }
     </style>
     <script>
         // Theme initialization - must run before page renders to avoid flash
@@ -4112,7 +4329,7 @@ class DistributedMeshyMcMapfaceServer:
                 }
 
                 const popupContent = `
-                    <strong>📡 ${nodeTitle}</strong><br>
+                    <strong>📡 <a href="#" onclick="showNodeDetails('${node.node_id}'); return false;" style="color: var(--accent-color); text-decoration: none; cursor: pointer;">${nodeTitle}</a></strong><br>
                     ${node.hw_model ? `Hardware: ${node.hw_model}<br>` : ''}
                     ${node.role ? `Role: ${node.role}<br>` : ''}
                     Last Seen: ${lastSeen.toLocaleString()}<br>
@@ -4348,6 +4565,338 @@ class DistributedMeshyMcMapfaceServer:
         
         // Fit map after initial load
         setTimeout(fitMapToMarkers, 2000);
+        
+        // Theme toggle functions
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeToggleText(newTheme);
+        }
+        
+        function updateThemeToggleText(theme) {
+            const toggle = document.getElementById('theme-toggle');
+            if (toggle) {
+                toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+            }
+        }
+        
+        // Node Details Modal Functions
+        let nodeDetailsModal = null;
+        
+        function createNodeDetailsModal() {
+            const modal = document.createElement('div');
+            modal.id = 'nodeDetailsModal';
+            modal.className = 'modal';
+            modal.innerHTML = `
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 id="modalTitle">Node Details</h2>
+                        <span class="close" onclick="closeNodeDetailsModal()">&times;</span>
+                    </div>
+                    <div class="modal-body">
+                        <div class="node-details-loading">
+                            <div class="spinner"></div>
+                            <p>Loading node details...</p>
+                        </div>
+                        <div class="node-details-content" style="display: none;">
+                            <div class="node-details-grid">
+                                <div class="node-basic-info">
+                                    <h3>Basic Information</h3>
+                                    <table class="node-info-table">
+                                        <tr><td><strong>Node ID:</strong></td><td id="modalNodeId">-</td></tr>
+                                        <tr><td><strong>Short Name:</strong></td><td id="modalShortName">-</td></tr>
+                                        <tr><td><strong>Long Name:</strong></td><td id="modalLongName">-</td></tr>
+                                        <tr><td><strong>Role:</strong></td><td id="modalRole">-</td></tr>
+                                        <tr><td><strong>Hardware:</strong></td><td id="modalHardware">-</td></tr>
+                                        <tr><td><strong>Firmware:</strong></td><td id="modalFirmware">-</td></tr>
+                                        <tr><td><strong>MAC Address:</strong></td><td id="modalMac">-</td></tr>
+                                    </table>
+                                </div>
+                                <div class="node-status-info">
+                                    <h3>Status & Metrics</h3>
+                                    <table class="node-info-table">
+                                        <tr><td><strong>Battery:</strong></td><td id="modalBattery">-</td></tr>
+                                        <tr><td><strong>Voltage:</strong></td><td id="modalVoltage">-</td></tr>
+                                        <tr><td><strong>Uptime:</strong></td><td id="modalUptime">-</td></tr>
+                                        <tr><td><strong>Channel Util:</strong></td><td id="modalChannelUtil">-</td></tr>
+                                        <tr><td><strong>Air Util TX:</strong></td><td id="modalAirUtil">-</td></tr>
+                                        <tr><td><strong>Hops Away:</strong></td><td id="modalHops">-</td></tr>
+                                        <tr><td><strong>Last Seen:</strong></td><td id="modalLastSeen">-</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Packet Statistics</h3>
+                                <div class="packet-stats-grid">
+                                    <div class="stat-item">
+                                        <span class="stat-label">Total Packets</span>
+                                        <span class="stat-value" id="modalTotalPackets">-</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Seeing Agents</span>
+                                        <span class="stat-value" id="modalSeeingAgents">-</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Agent Locations</span>
+                                        <span class="stat-value" id="modalAgentLocations">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Recent Telemetry</h3>
+                                <canvas id="telemetryChart" width="600" height="200"></canvas>
+                                <p class="chart-info">Battery level and environmental data over time</p>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Direct Neighbors</h3>
+                                <div id="neighborsContainer">
+                                    <p>Loading neighbor information...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeNodeDetailsModal();
+                }
+            });
+            
+            return modal;
+        }
+        
+        function showNodeDetails(nodeId) {
+            if (!nodeDetailsModal) {
+                nodeDetailsModal = createNodeDetailsModal();
+            }
+            
+            nodeDetailsModal.style.display = 'block';
+            nodeDetailsModal.querySelector('.node-details-loading').style.display = 'block';
+            nodeDetailsModal.querySelector('.node-details-content').style.display = 'none';
+            document.getElementById('modalTitle').textContent = `Node Details: ${nodeId}`;
+            
+            fetch(`/api/nodes/${encodeURIComponent(nodeId)}/details`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    populateNodeDetails(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching node details:', error);
+                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML = 
+                        '<p style="color: var(--error-color);">Error loading node details: ' + error.message + '</p>';
+                });
+        }
+        
+        function populateNodeDetails(data) {
+            nodeDetailsModal.querySelector('.node-details-loading').style.display = 'none';
+            nodeDetailsModal.querySelector('.node-details-content').style.display = 'block';
+            
+            document.getElementById('modalNodeId').textContent = data.node_id || '-';
+            document.getElementById('modalShortName').textContent = data.short_name || '-';
+            document.getElementById('modalLongName').textContent = data.long_name || '-';
+            document.getElementById('modalHardware').textContent = data.hw_model || '-';
+            document.getElementById('modalFirmware').textContent = data.firmware_version || '-';
+            document.getElementById('modalMac').textContent = data.macaddr || '-';
+            
+            const roleElement = document.getElementById('modalRole');
+            if (data.role) {
+                const roleClass = getRoleClass(data.role);
+                roleElement.innerHTML = `<span class="${roleClass}">${data.role}</span>`;
+            } else {
+                roleElement.textContent = '-';
+            }
+            
+            document.getElementById('modalBattery').textContent = 
+                data.battery_level ? `${data.battery_level}%` : '-';
+            document.getElementById('modalVoltage').textContent = 
+                data.voltage ? `${data.voltage}V` : '-';
+            document.getElementById('modalUptime').textContent = 
+                data.uptime_seconds ? formatUptime(data.uptime_seconds) : '-';
+            document.getElementById('modalChannelUtil').textContent = 
+                data.channel_utilization ? `${data.channel_utilization}%` : '-';
+            document.getElementById('modalAirUtil').textContent = 
+                data.air_util_tx ? `${data.air_util_tx}%` : '-';
+            document.getElementById('modalHops').textContent = 
+                data.hops_away !== null ? data.hops_away : '-';
+            document.getElementById('modalLastSeen').textContent = 
+                data.updated_at ? new Date(data.updated_at + 'Z').toLocaleString() : '-';
+            
+            document.getElementById('modalTotalPackets').textContent = data.packet_stats.total_packets || '0';
+            document.getElementById('modalSeeingAgents').textContent = data.packet_stats.seeing_agents || '0';
+            document.getElementById('modalAgentLocations').textContent = data.packet_stats.agent_locations || '-';
+            
+            populateNeighbors(data.neighbors || []);
+            createTelemetryChart(data.telemetry || []);
+        }
+        
+        function populateNeighbors(neighbors) {
+            const container = document.getElementById('neighborsContainer');
+            if (neighbors.length === 0) {
+                container.innerHTML = '<p>No direct neighbors detected in the selected time period.</p>';
+                return;
+            }
+            
+            let html = '<div class="neighbors-grid">';
+            neighbors.forEach(neighbor => {
+                const rssi = neighbor.avg_rssi !== null ? `${Math.round(neighbor.avg_rssi)} dBm` : '-';
+                const snr = neighbor.avg_snr !== null ? `${Math.round(neighbor.avg_snr)} dB` : '-';
+                const lastContact = neighbor.last_contact ? 
+                    new Date(neighbor.last_contact + 'Z').toLocaleString() : '-';
+                
+                html += `
+                    <div class="neighbor-card" onclick="showNodeDetails('${neighbor.node_id}')">
+                        <div class="neighbor-name">${neighbor.display_name}</div>
+                        <div class="neighbor-stats">
+                            <div>📡 ${rssi} RSSI</div>
+                            <div>📊 ${snr} SNR</div>
+                            <div>📦 ${neighbor.packet_count} packets</div>
+                            <div>🕒 ${lastContact}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        
+        function createTelemetryChart(telemetryData) {
+            const canvas = document.getElementById('telemetryChart');
+            const ctx = canvas.getContext('2d');
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (telemetryData.length === 0) {
+                ctx.fillStyle = 'var(--text-secondary)';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('No telemetry data available', canvas.width / 2, canvas.height / 2);
+                return;
+            }
+            
+            const batteryData = telemetryData
+                .filter(t => t.payload && typeof t.payload.battery_level === 'number')
+                .map(t => ({
+                    timestamp: new Date(t.timestamp + 'Z'),
+                    battery: t.payload.battery_level
+                }))
+                .sort((a, b) => a.timestamp - b.timestamp);
+            
+            if (batteryData.length === 0) {
+                ctx.fillStyle = 'var(--text-secondary)';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('No battery telemetry data available', canvas.width / 2, canvas.height / 2);
+                return;
+            }
+            
+            const padding = 40;
+            const chartWidth = canvas.width - 2 * padding;
+            const chartHeight = canvas.height - 2 * padding;
+            
+            const minTime = batteryData[0].timestamp.getTime();
+            const maxTime = batteryData[batteryData.length - 1].timestamp.getTime();
+            const minBattery = Math.max(0, Math.min(...batteryData.map(d => d.battery)) - 5);
+            const maxBattery = Math.min(100, Math.max(...batteryData.map(d => d.battery)) + 5);
+            
+            ctx.strokeStyle = 'var(--border-color)';
+            ctx.lineWidth = 1;
+            
+            for (let i = 0; i <= 10; i++) {
+                const y = padding + (i / 10) * chartHeight;
+                const batteryLevel = maxBattery - (i / 10) * (maxBattery - minBattery);
+                
+                ctx.beginPath();
+                ctx.moveTo(padding, y);
+                ctx.lineTo(padding + chartWidth, y);
+                ctx.stroke();
+                
+                ctx.fillStyle = 'var(--text-secondary)';
+                ctx.font = '10px Arial';
+                ctx.textAlign = 'right';
+                ctx.fillText(Math.round(batteryLevel) + '%', padding - 5, y + 3);
+            }
+            
+            ctx.beginPath();
+            ctx.moveTo(padding, padding + chartHeight);
+            ctx.lineTo(padding + chartWidth, padding + chartHeight);
+            ctx.stroke();
+            
+            ctx.strokeStyle = '#4CAF50';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            batteryData.forEach((point, index) => {
+                const x = padding + ((point.timestamp.getTime() - minTime) / (maxTime - minTime)) * chartWidth;
+                const y = padding + ((maxBattery - point.battery) / (maxBattery - minBattery)) * chartHeight;
+                
+                if (index === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            });
+            ctx.stroke();
+            
+            ctx.fillStyle = '#4CAF50';
+            batteryData.forEach(point => {
+                const x = padding + ((point.timestamp.getTime() - minTime) / (maxTime - minTime)) * chartWidth;
+                const y = padding + ((maxBattery - point.battery) / (maxBattery - minBattery)) * chartHeight;
+                
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+        
+        function closeNodeDetailsModal() {
+            if (nodeDetailsModal) {
+                nodeDetailsModal.style.display = 'none';
+            }
+        }
+        
+        function getRoleClass(role) {
+            const roleValue = String(role).toUpperCase();
+            
+            if (roleValue === '0' || roleValue === 'CLIENT') return 'role-client';
+            if (roleValue === '1' || roleValue.includes('CLIENT_MUTE')) return 'role-client-mute';
+            if (roleValue === '2' || roleValue === 'ROUTER') return 'role-router';
+            if (roleValue === '3' || roleValue.includes('ROUTER_CLIENT')) return 'role-router-client';
+            if (roleValue.includes('ROUTER_LATE')) return 'role-router-late';
+            if (roleValue.includes('REPEATER')) return 'role-repeater';
+            if (roleValue.includes('TRACKER')) return 'role-tracker';
+            
+            return 'role-unknown';
+        }
+        
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) {
+                return `${days}d ${hours}h ${minutes}m`;
+            } else if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else {
+                return `${minutes}m`;
+            }
+        }
+        
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && nodeDetailsModal && nodeDetailsModal.style.display === 'block') {
+                closeNodeDetailsModal();
+            }
+        });
     </script>
 </body>
 </html>
