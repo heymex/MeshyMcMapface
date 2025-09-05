@@ -2675,24 +2675,46 @@ class DistributedMeshyMcMapfaceServer:
 
         body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-primary); color: var(--text-primary); }
         .container { max-width: 1400px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
+        .section { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
         .table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-        .table th, .table td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-        .table th { background: #f8f9fa; position: sticky; top: 0; }
-        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
-        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
-        .nav a:hover { background: #e3f2fd; }
-        .nav a.active { background: #2196F3; color: white; }
+        .table th, .table td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+        .table th { background: var(--bg-tertiary); position: sticky; top: 0; }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; }
+        .nav a { color: var(--accent-color); text-decoration: none; padding: 10px 20px; background: var(--bg-secondary); border-radius: 4px; }
+        .nav a:hover { background: var(--accent-hover); }
+        .nav a.active { background: var(--accent-color); color: white; }
         .filter-controls { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; }
-        .filter-controls label { font-weight: bold; }
-        .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; }
-        .packet-type { background: #e3f2fd; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; }
-        .packet-payload { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .clickable { cursor: pointer; color: #2196F3; }
+        .filter-controls label { font-weight: bold; color: var(--text-primary); }
+        .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); }
+        .packet-type { background: var(--accent-hover); padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; color: var(--text-primary); }
+        .packet-payload { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+        .clickable { cursor: pointer; color: var(--accent-color); }
         .clickable:hover { text-decoration: underline; }
-        .table-container { max-height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+        .table-container { max-height: 600px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; }
+        
+        /* Dark mode toggle */
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: auto;
+        }
+        .theme-toggle:hover {
+            background: var(--accent-hover);
+        }
     </style>
+    <script>
+        // Theme initialization - must run before page renders to avoid flash
+        (function() {
+            const theme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -2707,6 +2729,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/packets" class="active">Packets</a>
             <a href="/nodes">Nodes</a>
             <a href="/map">Map</a>
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle">🌙 Dark</button>
         </div>
         
         <div class="section">
@@ -2843,6 +2866,30 @@ class DistributedMeshyMcMapfaceServer:
             }
             return String(payload);
         }
+        
+        // Theme toggle functions
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeToggleText(newTheme);
+        }
+        
+        function updateThemeToggleText(theme) {
+            const toggle = document.getElementById('theme-toggle');
+            if (toggle) {
+                toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+            }
+        }
+        
+        // Initialize theme toggle text on load
+        window.addEventListener('DOMContentLoaded', () => {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            updateThemeToggleText(currentTheme);
+        });
         
         document.addEventListener('DOMContentLoaded', function() {
             loadAgents();
