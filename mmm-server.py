@@ -1944,6 +1944,9 @@ class DistributedMeshyMcMapfaceServer:
                     <button class="filter-btn" data-filter="client-mute" onclick="toggleFilter('client-mute')">
                         Client Mute <span class="filter-counter" id="count-client-mute">0</span>
                     </button>
+                    <button class="filter-btn" data-filter="router-client" onclick="toggleFilter('router-client')">
+                        Router Client <span class="filter-counter" id="count-router-client">0</span>
+                    </button>
                     <button class="filter-btn" data-filter="has-gps" onclick="toggleFilter('has-gps')">
                         Has GPS <span class="filter-counter" id="count-has-gps">0</span>
                     </button>
@@ -2089,28 +2092,50 @@ class DistributedMeshyMcMapfaceServer:
                 
                 // Format role with color coding
                 let roleDisplay = '-';
-                if (node.role && node.role !== '' && node.role !== '0') {
+                if (node.role !== null && node.role !== undefined && node.role !== '') {
                     let roleClass = 'role-unknown';
-                    let roleName = node.role.toUpperCase();
+                    let roleName = '';
                     
-                    if (roleName.includes('ROUTER') && !roleName.includes('CLIENT')) {
-                        roleClass = 'role-router';
-                        roleName = 'ROUTER';
-                    } else if (roleName.includes('ROUTER') && roleName.includes('CLIENT')) {
-                        roleClass = 'role-router-client';  
-                        roleName = 'ROUTER_CLIENT';
-                    } else if (roleName.includes('CLIENT_MUTE') || roleName.includes('CLIENTMUTE')) {
-                        roleClass = 'role-client-mute';
-                        roleName = 'CLIENT_MUTE';
-                    } else if (roleName.includes('CLIENT')) {
+                    // Handle both numeric and string role values according to Meshtastic protocol
+                    const roleValue = String(node.role).toUpperCase();
+                    
+                    // Numeric values (Meshtastic protocol)
+                    if (roleValue === '0') {
                         roleClass = 'role-client';
                         roleName = 'CLIENT';
-                    } else if (roleName.includes('REPEATER')) {
+                    } else if (roleValue === '1') {
+                        roleClass = 'role-client-mute';
+                        roleName = 'CLIENT_MUTE';
+                    } else if (roleValue === '2') {
+                        roleClass = 'role-router';
+                        roleName = 'ROUTER';
+                    } else if (roleValue === '3') {
+                        roleClass = 'role-router-client';
+                        roleName = 'ROUTER_CLIENT';
+                    }
+                    // String values - handle various naming conventions
+                    else if (roleValue.includes('ROUTER_CLIENT') || roleValue.includes('ROUTERCLIENT')) {
+                        roleClass = 'role-router-client';  
+                        roleName = 'ROUTER_CLIENT';
+                    } else if (roleValue.includes('CLIENT_MUTE') || roleValue.includes('CLIENTMUTE')) {
+                        roleClass = 'role-client-mute';
+                        roleName = 'CLIENT_MUTE';
+                    } else if (roleValue.includes('ROUTER') && !roleValue.includes('CLIENT')) {
+                        roleClass = 'role-router';
+                        roleName = 'ROUTER';
+                    } else if (roleValue.includes('CLIENT') && !roleValue.includes('MUTE')) {
+                        roleClass = 'role-client';
+                        roleName = 'CLIENT';
+                    } else if (roleValue.includes('REPEATER')) {
                         roleClass = 'role-repeater';
                         roleName = 'REPEATER';
-                    } else if (roleName.includes('TRACKER')) {
+                    } else if (roleValue.includes('TRACKER')) {
                         roleClass = 'role-tracker';
                         roleName = 'TRACKER';
+                    } else {
+                        // Unknown role - show the raw value
+                        roleClass = 'role-unknown';
+                        roleName = roleValue;
                     }
                     
                     roleDisplay = `<span class="${roleClass}">${roleName}</span>`;
@@ -2421,22 +2446,49 @@ class DistributedMeshyMcMapfaceServer:
         }
         
         function nodeMatchesFilter(node, filter) {
-            const role = (node.role || '').toUpperCase();
+            const rawRole = node.role;
             const hasGPS = node.position && node.position[0] && node.position[1];
             const battery = node.battery_level;
             
+            // Normalize role to standard names using same logic as display
+            function normalizeRole(roleValue) {
+                if (roleValue === null || roleValue === undefined || roleValue === '') return '';
+                const roleStr = String(roleValue).toUpperCase();
+                
+                // Handle numeric values (Meshtastic protocol)
+                if (roleStr === '0') return 'CLIENT';
+                if (roleStr === '1') return 'CLIENT_MUTE';
+                if (roleStr === '2') return 'ROUTER';
+                if (roleStr === '3') return 'ROUTER_CLIENT';
+                
+                // Handle string values
+                if (roleStr.includes('ROUTER_CLIENT') || roleStr.includes('ROUTERCLIENT')) return 'ROUTER_CLIENT';
+                if (roleStr.includes('CLIENT_MUTE') || roleStr.includes('CLIENTMUTE')) return 'CLIENT_MUTE';
+                if (roleStr.includes('ROUTER') && !roleStr.includes('CLIENT')) return 'ROUTER';
+                if (roleStr.includes('CLIENT') && !roleStr.includes('MUTE')) return 'CLIENT';
+                if (roleStr.includes('REPEATER')) return 'REPEATER';
+                if (roleStr.includes('TRACKER')) return 'TRACKER';
+                
+                return roleStr; // Return as-is for unknown roles
+            }
+            
+            const normalizedRole = normalizeRole(rawRole);
+            
             switch (filter) {
                 case 'routers':
-                    return role.includes('ROUTER') && !role.includes('CLIENT');
+                    return normalizedRole === 'ROUTER';
                     
                 case 'routers-no-gps':
-                    return (role.includes('ROUTER') && !role.includes('CLIENT')) && !hasGPS;
+                    return normalizedRole === 'ROUTER' && !hasGPS;
                     
                 case 'clients':
-                    return role.includes('CLIENT') && !role.includes('MUTE');
+                    return normalizedRole === 'CLIENT';
                     
                 case 'client-mute':
-                    return role.includes('CLIENT_MUTE') || role.includes('CLIENTMUTE');
+                    return normalizedRole === 'CLIENT_MUTE';
+                    
+                case 'router-client':
+                    return normalizedRole === 'ROUTER_CLIENT';
                     
                 case 'has-gps':
                     return hasGPS;
@@ -2460,6 +2512,7 @@ class DistributedMeshyMcMapfaceServer:
                 'routers-no-gps': 0,
                 'clients': 0,
                 'client-mute': 0,
+                'router-client': 0,
                 'has-gps': 0,
                 'high-battery': 0,
                 'low-battery': 0
@@ -2470,6 +2523,7 @@ class DistributedMeshyMcMapfaceServer:
                 if (nodeMatchesFilter(node, 'routers-no-gps')) counts['routers-no-gps']++;
                 if (nodeMatchesFilter(node, 'clients')) counts['clients']++;
                 if (nodeMatchesFilter(node, 'client-mute')) counts['client-mute']++;
+                if (nodeMatchesFilter(node, 'router-client')) counts['router-client']++;
                 if (nodeMatchesFilter(node, 'has-gps')) counts['has-gps']++;
                 if (nodeMatchesFilter(node, 'high-battery')) counts['high-battery']++;
                 if (nodeMatchesFilter(node, 'low-battery')) counts['low-battery']++;
