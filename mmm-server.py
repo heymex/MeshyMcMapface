@@ -2012,15 +2012,15 @@ class DistributedMeshyMcMapfaceServer:
         .sortable::after { content: '⇅'; margin-left: 5px; color: #ccc; }
         .sortable.asc::after { content: '↑'; color: #2196F3; }
         .sortable.desc::after { content: '↓'; color: #2196F3; }
-        .filter-section { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #ddd; }
+        .filter-section { background: var(--bg-tertiary); padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid var(--border-color); }
         .filter-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-        .filter-btn { padding: 6px 12px; border: 1px solid #ddd; background: white; border-radius: 20px; cursor: pointer; font-size: 0.85em; transition: all 0.2s; }
-        .filter-btn:hover { background: #f0f0f0; }
-        .filter-btn.active { background: #2196F3; color: white; border-color: #2196F3; }
-        .filter-btn.active:hover { background: #1976D2; }
-        .filter-counter { background: #666; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.75em; margin-left: 5px; }
-        .clear-filters { background: #f44336; color: white; border: none; }
-        .clear-filters:hover { background: #d32f2f; }
+        .filter-btn { padding: 6px 12px; border: 1px solid var(--border-color); background: var(--bg-secondary); border-radius: 20px; cursor: pointer; font-size: 0.85em; transition: all 0.2s; color: var(--text-primary); }
+        .filter-btn:hover { background: var(--accent-hover); }
+        .filter-btn.active { background: var(--accent-color); color: white; border-color: var(--accent-color); }
+        .filter-btn.active:hover { background: var(--accent-hover); }
+        .filter-counter { background: var(--text-secondary); color: var(--bg-secondary); padding: 2px 6px; border-radius: 10px; font-size: 0.75em; margin-left: 5px; }
+        .clear-filters { background: var(--error-color); color: white; border: none; }
+        .clear-filters:hover { background: var(--error-color); opacity: 0.8; }
         
         /* Dark mode toggle */
         .theme-toggle {
@@ -2253,6 +2253,45 @@ class DistributedMeshyMcMapfaceServer:
             opacity: 0.7;
             text-decoration: underline !important;
         }
+        
+        /* Search field styles */
+        .search-container {
+            margin-bottom: 15px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .search-input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 14px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 2px var(--accent-hover);
+        }
+        
+        .search-clear {
+            background: var(--text-secondary);
+            color: var(--bg-secondary);
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        
+        .search-clear:hover {
+            opacity: 0.8;
+        }
     </style>
     <script>
         // Theme initialization - must run before page renders to avoid flash
@@ -2294,6 +2333,12 @@ class DistributedMeshyMcMapfaceServer:
             </div>
             
             <div class="filter-section">
+                <div class="search-container">
+                    <label for="search-input" style="color: var(--text-primary); font-weight: bold;">🔎 Search:</label>
+                    <input type="text" id="search-input" class="search-input" placeholder="Search by node ID, short name, or long name..." oninput="handleSearch()">
+                    <button class="search-clear" onclick="clearSearch()">Clear</button>
+                </div>
+                
                 <strong>🔍 Quick Filters:</strong>
                 <div class="filter-buttons">
                     <button class="filter-btn" data-filter="all" onclick="toggleFilter('all')">
@@ -2750,6 +2795,51 @@ class DistributedMeshyMcMapfaceServer:
         // Filtering functionality
         let activeFilters = new Set(['all']);
         let allNodes = []; // Keep original unfiltered data
+        let searchQuery = ''; // Current search query
+        
+        // Search functionality
+        function handleSearch() {
+            searchQuery = document.getElementById('search-input').value.toLowerCase().trim();
+            applyFiltersAndSearch();
+            updateFilterStatus();
+        }
+        
+        function clearSearch() {
+            document.getElementById('search-input').value = '';
+            searchQuery = '';
+            applyFiltersAndSearch();
+            updateFilterStatus();
+        }
+        
+        function nodeMatchesSearch(node) {
+            if (!searchQuery) return true;
+            
+            const searchFields = [
+                node.node_id,
+                node.short_name,
+                node.long_name
+            ].filter(field => field); // Remove null/undefined values
+            
+            return searchFields.some(field => 
+                field.toLowerCase().includes(searchQuery)
+            );
+        }
+        
+        function applyFiltersAndSearch() {
+            // First apply search filter
+            let filteredNodes = allNodes.filter(node => nodeMatchesSearch(node));
+            
+            // Then apply category filters
+            if (!activeFilters.has('all')) {
+                filteredNodes = filteredNodes.filter(node => {
+                    return Array.from(activeFilters).some(filter => nodeMatchesFilter(node, filter));
+                });
+            }
+            
+            currentNodes = filteredNodes;
+            displayNodes();
+            updateFilterCounts();
+        }
         
         function toggleFilter(filterType) {
             console.log('Toggle filter:', filterType);
@@ -2776,14 +2866,14 @@ class DistributedMeshyMcMapfaceServer:
             }
             
             updateFilterUI();
-            applyFilters();
+            applyFiltersAndSearch();
         }
         
         function clearAllFilters() {
             activeFilters.clear();
             activeFilters.add('all');
             updateFilterUI();
-            applyFilters();
+            applyFiltersAndSearch();
         }
         
         function updateFilterUI() {
@@ -2798,25 +2888,6 @@ class DistributedMeshyMcMapfaceServer:
             });
         }
         
-        function applyFilters() {
-            // Filter the nodes based on active filters
-            if (activeFilters.has('all')) {
-                currentNodes = [...allNodes]; // Show all nodes
-            } else {
-                currentNodes = allNodes.filter(node => {
-                    return Array.from(activeFilters).some(filter => nodeMatchesFilter(node, filter));
-                });
-            }
-            
-            // Update filter counts
-            updateFilterCounts();
-            
-            // Update filter status display
-            updateFilterStatus();
-            
-            // Re-display the filtered nodes
-            displayNodes();
-        }
         
         function nodeMatchesFilter(node, filter) {
             const rawRole = node.role;
@@ -2921,9 +2992,15 @@ class DistributedMeshyMcMapfaceServer:
             const statusDiv = document.getElementById('filter-status');
             if (!statusDiv) return;
             
-            if (activeFilters.has('all')) {
-                statusDiv.innerHTML = `📊 Showing all ${currentNodes.length} nodes`;
-            } else {
+            let statusText = `📊 Showing ${currentNodes.length} of ${allNodes.length} nodes`;
+            
+            // Add search info
+            if (searchQuery) {
+                statusText += ` (search: "${searchQuery}")`;
+            }
+            
+            // Add filter info
+            if (!activeFilters.has('all')) {
                 const filterNames = Array.from(activeFilters).map(f => {
                     switch(f) {
                         case 'routers': return 'Routers';
@@ -2938,8 +3015,10 @@ class DistributedMeshyMcMapfaceServer:
                         default: return f;
                     }
                 }).join(', ');
-                statusDiv.innerHTML = `🔍 Showing ${currentNodes.length} nodes filtered by: ${filterNames}`;
+                statusText += ` (filters: ${filterNames})`;
             }
+            
+            statusDiv.innerHTML = statusText;
         }
         
         // Sorting functionality
