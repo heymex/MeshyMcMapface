@@ -237,6 +237,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/packets', self.get_packets)
         self.app.router.add_get('/api/nodes', self.get_nodes)
         self.app.router.add_get('/api/nodes/detailed', self.get_nodes_detailed)
+        self.app.router.add_get('/api/nodes/{node_id}/details', self.get_node_details)
         self.app.router.add_get('/api/topology', self.get_topology)
         self.app.router.add_get('/api/connections', self.get_connections)
         self.app.router.add_get('/api/routes', self.get_routes)
@@ -1036,6 +1037,154 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error getting detailed nodes: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_node_details(self, request):
+        """Get detailed information for a specific node including telemetry and neighbors"""
+        try:
+            node_id = request.match_info['node_id']
+            hours = int(request.query.get('hours', 72))
+            
+            # Get basic node information with user_info
+            node_query = '''
+                SELECT n.node_id, u.short_name, u.long_name, u.macaddr, u.hw_model, u.role,
+                       COALESCE(u.battery_level, n.battery_level) as battery_level,
+                       n.position_lat, n.position_lon, n.rssi, n.snr, n.updated_at,
+                       u.voltage, u.channel_utilization, u.air_util_tx, u.uptime_seconds, 
+                       u.hops_away, u.firmware_version, u.region, u.modem_preset
+                FROM nodes n
+                LEFT JOIN user_info u ON n.node_id = u.node_id
+                WHERE n.node_id = ?
+            '''
+            
+            cursor = await self.db.execute(node_query, (node_id,))
+            node_data = await cursor.fetchone()
+            
+            if not node_data:
+                return web.json_response({'error': 'Node not found'}, status=404)
+            
+            # Get packet statistics for this node
+            packet_stats_query = '''
+                SELECT COUNT(*) as total_packets,
+                       COUNT(DISTINCT agent_id) as seeing_agents,
+                       GROUP_CONCAT(DISTINCT a.location_name) as agent_locations,
+                       MIN(timestamp) as first_seen,
+                       MAX(timestamp) as last_seen
+                FROM packets p
+                JOIN agents a ON p.agent_id = a.agent_id
+                WHERE p.from_node = ?
+                AND datetime(p.timestamp) > datetime('now', '-{} hours')
+            '''.format(hours)
+            
+            cursor = await self.db.execute(packet_stats_query, (node_id,))
+            packet_stats = await cursor.fetchone()
+            
+            # Get recent telemetry data for charts
+            telemetry_query = '''
+                SELECT timestamp, type, payload
+                FROM packets 
+                WHERE from_node = ?
+                AND type IN ('TELEMETRY_APP', 'DEVICE_METRICS', 'ENVIRONMENT_METRICS')
+                AND datetime(timestamp) > datetime('now', '-{} hours')
+                ORDER BY timestamp DESC
+                LIMIT 50
+            '''.format(hours)
+            
+            cursor = await self.db.execute(telemetry_query, (node_id,))
+            telemetry_data = await cursor.fetchall()
+            
+            # Get direct neighbors (nodes this node has directly communicated with)
+            neighbors_query = '''
+                SELECT DISTINCT to_node as neighbor_node,
+                       AVG(rssi) as avg_rssi,
+                       AVG(snr) as avg_snr,
+                       COUNT(*) as packet_count,
+                       MAX(timestamp) as last_contact
+                FROM packets
+                WHERE from_node = ?
+                AND to_node NOT IN ('^all', '^local')
+                AND to_node IS NOT NULL
+                AND datetime(timestamp) > datetime('now', '-{} hours')
+                GROUP BY to_node
+                ORDER BY packet_count DESC
+                LIMIT 20
+            '''.format(hours)
+            
+            cursor = await self.db.execute(neighbors_query, (node_id,))
+            neighbors_data = await cursor.fetchall()
+            
+            # Get neighbor names
+            neighbor_names = {}
+            if neighbors_data:
+                neighbor_ids = [n[0] for n in neighbors_data]
+                neighbor_ids_placeholder = ','.join(['?' for _ in neighbor_ids])
+                names_query = f'''
+                    SELECT node_id, COALESCE(short_name, node_id) as display_name
+                    FROM user_info 
+                    WHERE node_id IN ({neighbor_ids_placeholder})
+                '''
+                cursor = await self.db.execute(names_query, neighbor_ids)
+                neighbor_names = {row[0]: row[1] for row in await cursor.fetchall()}
+            
+            # Process telemetry data for charts
+            processed_telemetry = []
+            for row in telemetry_data:
+                try:
+                    payload = json.loads(row[2]) if row[2] else {}
+                    processed_telemetry.append({
+                        'timestamp': row[0],
+                        'type': row[1],
+                        'payload': payload
+                    })
+                except json.JSONDecodeError:
+                    continue
+            
+            # Build response
+            result = {
+                'node_id': node_data[0],
+                'short_name': node_data[1],
+                'long_name': node_data[2],
+                'macaddr': node_data[3],
+                'hw_model': node_data[4],
+                'role': node_data[5],
+                'battery_level': node_data[6],
+                'position': [node_data[7], node_data[8]] if node_data[7] and node_data[8] else None,
+                'rssi': node_data[9],
+                'snr': node_data[10],
+                'updated_at': node_data[11],
+                'voltage': node_data[12],
+                'channel_utilization': node_data[13],
+                'air_util_tx': node_data[14],
+                'uptime_seconds': node_data[15],
+                'hops_away': node_data[16],
+                'firmware_version': node_data[17],
+                'region': node_data[18],
+                'modem_preset': node_data[19],
+                'packet_stats': {
+                    'total_packets': packet_stats[0] if packet_stats else 0,
+                    'seeing_agents': packet_stats[1] if packet_stats else 0,
+                    'agent_locations': packet_stats[2] if packet_stats else '',
+                    'first_seen': packet_stats[3] if packet_stats else None,
+                    'last_seen': packet_stats[4] if packet_stats else None
+                },
+                'telemetry': processed_telemetry,
+                'neighbors': [
+                    {
+                        'node_id': n[0],
+                        'display_name': neighbor_names.get(n[0], n[0]),
+                        'avg_rssi': n[1],
+                        'avg_snr': n[2],
+                        'packet_count': n[3],
+                        'last_contact': n[4]
+                    }
+                    for n in neighbors_data
+                ]
+            }
+            
+            return web.json_response(result)
+            
+        except Exception as e:
+            self.logger.error(f"Error getting node details for {request.match_info.get('node_id', 'unknown')}: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def get_stats(self, request):
@@ -1887,6 +2036,223 @@ class DistributedMeshyMcMapfaceServer:
         .theme-toggle:hover {
             background: var(--accent-hover);
         }
+        
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 10000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+        
+        .modal-content {
+            background-color: var(--bg-secondary);
+            margin: 2% auto;
+            padding: 0;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 1200px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px var(--shadow-color);
+        }
+        
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: var(--bg-tertiary);
+            border-radius: 8px 8px 0 0;
+        }
+        
+        .modal-header h2 {
+            margin: 0;
+            color: var(--text-primary);
+        }
+        
+        .close {
+            color: var(--text-secondary);
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+        }
+        
+        .close:hover,
+        .close:focus {
+            color: var(--text-primary);
+        }
+        
+        .modal-body {
+            padding: 20px;
+        }
+        
+        .node-details-loading {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .spinner {
+            border: 4px solid var(--border-color);
+            border-top: 4px solid var(--accent-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .node-details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .node-info-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .node-info-table td {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+        
+        .node-info-table td:first-child {
+            width: 140px;
+        }
+        
+        .node-details-section {
+            margin-bottom: 30px;
+        }
+        
+        .node-details-section h3 {
+            color: var(--text-primary);
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid var(--accent-color);
+        }
+        
+        .packet-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        
+        .stat-item {
+            background: var(--bg-tertiary);
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            border: 1px solid var(--border-color);
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--text-primary);
+        }
+        
+        #telemetryChart {
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            max-width: 100%;
+            background: var(--bg-secondary);
+        }
+        
+        .chart-info {
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .neighbors-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+        }
+        
+        .neighbor-card {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .neighbor-card:hover {
+            border-color: var(--accent-color);
+            box-shadow: 0 2px 8px var(--shadow-color);
+        }
+        
+        .neighbor-name {
+            font-weight: bold;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        
+        .neighbor-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        @media (max-width: 768px) {
+            .modal-content {
+                width: 95%;
+                margin: 5% auto;
+                max-height: 90vh;
+            }
+            
+            .node-details-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .packet-stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .neighbors-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        /* Clickable node links */
+        .table a {
+            transition: opacity 0.2s ease;
+        }
+        
+        .table a:hover {
+            opacity: 0.7;
+            text-decoration: underline !important;
+        }
     </style>
     <script>
         // Theme initialization - must run before page renders to avoid flash
@@ -2160,8 +2526,8 @@ class DistributedMeshyMcMapfaceServer:
                 }
                 
                 row.innerHTML = `
-                    <td><strong>${node.node_id}</strong></td>
-                    <td>${nameDisplay}</td>
+                    <td><strong><a href="#" onclick="showNodeDetails('${node.node_id}'); return false;" style="color: var(--accent-color); text-decoration: none;">${node.node_id}</a></strong></td>
+                    <td><a href="#" onclick="showNodeDetails('${node.node_id}'); return false;" style="color: var(--text-primary); text-decoration: none;">${nameDisplay}</a></td>
                     <td>${roleDisplay}</td>
                     <td>${agentsDisplay}</td>
                     <td>${lastSeen}</td>
@@ -2689,10 +3055,347 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
+        // Node Details Modal Functions
+        let nodeDetailsModal = null;
+        let modalChart = null;
+        
+        function createNodeDetailsModal() {
+            // Create modal container
+            const modal = document.createElement('div');
+            modal.id = 'nodeDetailsModal';
+            modal.className = 'modal';
+            modal.innerHTML = `
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 id="modalTitle">Node Details</h2>
+                        <span class="close" onclick="closeNodeDetailsModal()">&times;</span>
+                    </div>
+                    <div class="modal-body">
+                        <div class="node-details-loading">
+                            <div class="spinner"></div>
+                            <p>Loading node details...</p>
+                        </div>
+                        <div class="node-details-content" style="display: none;">
+                            <div class="node-details-grid">
+                                <div class="node-basic-info">
+                                    <h3>Basic Information</h3>
+                                    <table class="node-info-table">
+                                        <tr><td><strong>Node ID:</strong></td><td id="modalNodeId">-</td></tr>
+                                        <tr><td><strong>Short Name:</strong></td><td id="modalShortName">-</td></tr>
+                                        <tr><td><strong>Long Name:</strong></td><td id="modalLongName">-</td></tr>
+                                        <tr><td><strong>Role:</strong></td><td id="modalRole">-</td></tr>
+                                        <tr><td><strong>Hardware:</strong></td><td id="modalHardware">-</td></tr>
+                                        <tr><td><strong>Firmware:</strong></td><td id="modalFirmware">-</td></tr>
+                                        <tr><td><strong>MAC Address:</strong></td><td id="modalMac">-</td></tr>
+                                    </table>
+                                </div>
+                                <div class="node-status-info">
+                                    <h3>Status & Metrics</h3>
+                                    <table class="node-info-table">
+                                        <tr><td><strong>Battery:</strong></td><td id="modalBattery">-</td></tr>
+                                        <tr><td><strong>Voltage:</strong></td><td id="modalVoltage">-</td></tr>
+                                        <tr><td><strong>Uptime:</strong></td><td id="modalUptime">-</td></tr>
+                                        <tr><td><strong>Channel Util:</strong></td><td id="modalChannelUtil">-</td></tr>
+                                        <tr><td><strong>Air Util TX:</strong></td><td id="modalAirUtil">-</td></tr>
+                                        <tr><td><strong>Hops Away:</strong></td><td id="modalHops">-</td></tr>
+                                        <tr><td><strong>Last Seen:</strong></td><td id="modalLastSeen">-</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Packet Statistics</h3>
+                                <div class="packet-stats-grid">
+                                    <div class="stat-item">
+                                        <span class="stat-label">Total Packets</span>
+                                        <span class="stat-value" id="modalTotalPackets">-</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Seeing Agents</span>
+                                        <span class="stat-value" id="modalSeeingAgents">-</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Agent Locations</span>
+                                        <span class="stat-value" id="modalAgentLocations">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Recent Telemetry</h3>
+                                <canvas id="telemetryChart" width="600" height="200"></canvas>
+                                <p class="chart-info">Battery level and environmental data over time</p>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Direct Neighbors</h3>
+                                <div id="neighborsContainer">
+                                    <p>Loading neighbor information...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Add modal event listeners
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeNodeDetailsModal();
+                }
+            });
+            
+            return modal;
+        }
+        
+        function showNodeDetails(nodeId) {
+            if (!nodeDetailsModal) {
+                nodeDetailsModal = createNodeDetailsModal();
+            }
+            
+            // Show modal and loading state
+            nodeDetailsModal.style.display = 'block';
+            nodeDetailsModal.querySelector('.node-details-loading').style.display = 'block';
+            nodeDetailsModal.querySelector('.node-details-content').style.display = 'none';
+            document.getElementById('modalTitle').textContent = `Node Details: ${nodeId}`;
+            
+            // Fetch node details
+            fetch(`/api/nodes/${encodeURIComponent(nodeId)}/details`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    populateNodeDetails(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching node details:', error);
+                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML = 
+                        '<p style="color: var(--error-color);">Error loading node details: ' + error.message + '</p>';
+                });
+        }
+        
+        function populateNodeDetails(data) {
+            // Hide loading, show content
+            nodeDetailsModal.querySelector('.node-details-loading').style.display = 'none';
+            nodeDetailsModal.querySelector('.node-details-content').style.display = 'block';
+            
+            // Basic info
+            document.getElementById('modalNodeId').textContent = data.node_id || '-';
+            document.getElementById('modalShortName').textContent = data.short_name || '-';
+            document.getElementById('modalLongName').textContent = data.long_name || '-';
+            document.getElementById('modalHardware').textContent = data.hw_model || '-';
+            document.getElementById('modalFirmware').textContent = data.firmware_version || '-';
+            document.getElementById('modalMac').textContent = data.macaddr || '-';
+            
+            // Role with styling
+            const roleElement = document.getElementById('modalRole');
+            if (data.role) {
+                const roleClass = getRoleClass(data.role);
+                roleElement.innerHTML = `<span class="${roleClass}">${data.role}</span>`;
+            } else {
+                roleElement.textContent = '-';
+            }
+            
+            // Status info
+            document.getElementById('modalBattery').textContent = 
+                data.battery_level ? `${data.battery_level}%` : '-';
+            document.getElementById('modalVoltage').textContent = 
+                data.voltage ? `${data.voltage}V` : '-';
+            document.getElementById('modalUptime').textContent = 
+                data.uptime_seconds ? formatUptime(data.uptime_seconds) : '-';
+            document.getElementById('modalChannelUtil').textContent = 
+                data.channel_utilization ? `${data.channel_utilization}%` : '-';
+            document.getElementById('modalAirUtil').textContent = 
+                data.air_util_tx ? `${data.air_util_tx}%` : '-';
+            document.getElementById('modalHops').textContent = 
+                data.hops_away !== null ? data.hops_away : '-';
+            document.getElementById('modalLastSeen').textContent = 
+                data.updated_at ? new Date(data.updated_at + 'Z').toLocaleString() : '-';
+            
+            // Packet stats
+            document.getElementById('modalTotalPackets').textContent = data.packet_stats.total_packets || '0';
+            document.getElementById('modalSeeingAgents').textContent = data.packet_stats.seeing_agents || '0';
+            document.getElementById('modalAgentLocations').textContent = data.packet_stats.agent_locations || '-';
+            
+            // Populate neighbors
+            populateNeighbors(data.neighbors || []);
+            
+            // Create telemetry chart
+            createTelemetryChart(data.telemetry || []);
+        }
+        
+        function populateNeighbors(neighbors) {
+            const container = document.getElementById('neighborsContainer');
+            if (neighbors.length === 0) {
+                container.innerHTML = '<p>No direct neighbors detected in the selected time period.</p>';
+                return;
+            }
+            
+            let html = '<div class="neighbors-grid">';
+            neighbors.forEach(neighbor => {
+                const rssi = neighbor.avg_rssi !== null ? `${Math.round(neighbor.avg_rssi)} dBm` : '-';
+                const snr = neighbor.avg_snr !== null ? `${Math.round(neighbor.avg_snr)} dB` : '-';
+                const lastContact = neighbor.last_contact ? 
+                    new Date(neighbor.last_contact + 'Z').toLocaleString() : '-';
+                
+                html += `
+                    <div class="neighbor-card" onclick="showNodeDetails('${neighbor.node_id}')">
+                        <div class="neighbor-name">${neighbor.display_name}</div>
+                        <div class="neighbor-stats">
+                            <div>📡 ${rssi} RSSI</div>
+                            <div>📊 ${snr} SNR</div>
+                            <div>📦 ${neighbor.packet_count} packets</div>
+                            <div>🕒 ${lastContact}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        
+        function createTelemetryChart(telemetryData) {
+            const canvas = document.getElementById('telemetryChart');
+            const ctx = canvas.getContext('2d');
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (telemetryData.length === 0) {
+                ctx.fillStyle = 'var(--text-secondary)';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('No telemetry data available', canvas.width / 2, canvas.height / 2);
+                return;
+            }
+            
+            // Extract battery data
+            const batteryData = telemetryData
+                .filter(t => t.payload && typeof t.payload.battery_level === 'number')
+                .map(t => ({
+                    timestamp: new Date(t.timestamp + 'Z'),
+                    battery: t.payload.battery_level
+                }))
+                .sort((a, b) => a.timestamp - b.timestamp);
+            
+            if (batteryData.length === 0) {
+                ctx.fillStyle = 'var(--text-secondary)';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('No battery telemetry data available', canvas.width / 2, canvas.height / 2);
+                return;
+            }
+            
+            // Chart dimensions
+            const padding = 40;
+            const chartWidth = canvas.width - 2 * padding;
+            const chartHeight = canvas.height - 2 * padding;
+            
+            // Get data ranges
+            const minTime = batteryData[0].timestamp.getTime();
+            const maxTime = batteryData[batteryData.length - 1].timestamp.getTime();
+            const minBattery = Math.max(0, Math.min(...batteryData.map(d => d.battery)) - 5);
+            const maxBattery = Math.min(100, Math.max(...batteryData.map(d => d.battery)) + 5);
+            
+            // Draw grid and axes
+            ctx.strokeStyle = 'var(--border-color)';
+            ctx.lineWidth = 1;
+            
+            // Y-axis (battery levels)
+            for (let i = 0; i <= 10; i++) {
+                const y = padding + (i / 10) * chartHeight;
+                const batteryLevel = maxBattery - (i / 10) * (maxBattery - minBattery);
+                
+                ctx.beginPath();
+                ctx.moveTo(padding, y);
+                ctx.lineTo(padding + chartWidth, y);
+                ctx.stroke();
+                
+                ctx.fillStyle = 'var(--text-secondary)';
+                ctx.font = '10px Arial';
+                ctx.textAlign = 'right';
+                ctx.fillText(Math.round(batteryLevel) + '%', padding - 5, y + 3);
+            }
+            
+            // X-axis (time)
+            ctx.beginPath();
+            ctx.moveTo(padding, padding + chartHeight);
+            ctx.lineTo(padding + chartWidth, padding + chartHeight);
+            ctx.stroke();
+            
+            // Draw battery line
+            ctx.strokeStyle = '#4CAF50';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            batteryData.forEach((point, index) => {
+                const x = padding + ((point.timestamp.getTime() - minTime) / (maxTime - minTime)) * chartWidth;
+                const y = padding + ((maxBattery - point.battery) / (maxBattery - minBattery)) * chartHeight;
+                
+                if (index === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            });
+            ctx.stroke();
+            
+            // Draw data points
+            ctx.fillStyle = '#4CAF50';
+            batteryData.forEach(point => {
+                const x = padding + ((point.timestamp.getTime() - minTime) / (maxTime - minTime)) * chartWidth;
+                const y = padding + ((maxBattery - point.battery) / (maxBattery - minBattery)) * chartHeight;
+                
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+        
+        function closeNodeDetailsModal() {
+            if (nodeDetailsModal) {
+                nodeDetailsModal.style.display = 'none';
+            }
+        }
+        
+        function getRoleClass(role) {
+            const roleValue = String(role).toUpperCase();
+            
+            if (roleValue === '0' || roleValue === 'CLIENT') return 'role-client';
+            if (roleValue === '1' || roleValue.includes('CLIENT_MUTE')) return 'role-client-mute';
+            if (roleValue === '2' || roleValue === 'ROUTER') return 'role-router';
+            if (roleValue === '3' || roleValue.includes('ROUTER_CLIENT')) return 'role-router-client';
+            if (roleValue.includes('ROUTER_LATE')) return 'role-router-late';
+            if (roleValue.includes('REPEATER')) return 'role-repeater';
+            if (roleValue.includes('TRACKER')) return 'role-tracker';
+            
+            return 'role-unknown';
+        }
+        
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) {
+                return `${days}d ${hours}h ${minutes}m`;
+            } else if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else {
+                return `${minutes}m`;
+            }
+        }
+        
         // Initialize theme toggle text on load
         window.addEventListener('DOMContentLoaded', () => {
             const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
             updateThemeToggleText(currentTheme);
+        });
+        
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && nodeDetailsModal && nodeDetailsModal.style.display === 'block') {
+                closeNodeDetailsModal();
+            }
         });
         
         // Refresh every 30 seconds
