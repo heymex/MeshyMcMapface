@@ -1066,10 +1066,10 @@ class DistributedMeshyMcMapfaceServer:
             # Get packet statistics for this node
             packet_stats_query = '''
                 SELECT COUNT(*) as total_packets,
-                       COUNT(DISTINCT agent_id) as seeing_agents,
+                       COUNT(DISTINCT p.agent_id) as seeing_agents,
                        GROUP_CONCAT(DISTINCT a.location_name) as agent_locations,
-                       MIN(timestamp) as first_seen,
-                       MAX(timestamp) as last_seen
+                       MIN(p.timestamp) as first_seen,
+                       MAX(p.timestamp) as last_seen
                 FROM packets p
                 JOIN agents a ON p.agent_id = a.agent_id
                 WHERE p.from_node = ?
