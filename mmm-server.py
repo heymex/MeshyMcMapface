@@ -920,41 +920,94 @@ class DistributedMeshyMcMapfaceServer:
             return web.json_response({'error': str(e)}, status=500)
     
     async def get_nodes_detailed(self, request):
-        """Get detailed node information with packet history and user info"""
+        """Get detailed node information with packet history and user info - OPTIMIZED"""
         try:
             hours = int(request.query.get('hours', 72))
-            limit = int(request.query.get('limit', 100))
+            limit = int(request.query.get('limit', 50))  # Reduced default limit
             
-            # Get nodes with enhanced user info and recent packet counts
-            query = '''
-                SELECT DISTINCT n.node_id, 
+            # OPTIMIZATION: Single query to get all nodes with basic info
+            nodes_query = '''
+                SELECT n.node_id, 
                        u.short_name, u.long_name, u.macaddr, u.hw_model, u.role,
                        COALESCE(u.battery_level, n.battery_level) as battery_level,
                        n.position_lat, n.position_lon,
                        n.rssi, n.snr, n.updated_at,
-                       u.voltage, u.channel_utilization, u.air_util_tx, u.uptime_seconds, u.hops_away,
-                       (SELECT COUNT(*) FROM packets p WHERE p.from_node = n.node_id 
-                        AND datetime(p.timestamp) > datetime('now', '-{} hours')) as packet_count,
-                       (SELECT COUNT(DISTINCT p.agent_id) FROM packets p WHERE p.from_node = n.node_id
-                        AND datetime(p.timestamp) > datetime('now', '-{} hours')) as agent_count,
-                       (SELECT GROUP_CONCAT(DISTINCT a.location_name) 
-                        FROM packets p JOIN agents a ON p.agent_id = a.agent_id 
-                        WHERE p.from_node = n.node_id 
-                        AND datetime(p.timestamp) > datetime('now', '-{} hours')) as seeing_agents
+                       u.voltage, u.channel_utilization, u.air_util_tx, u.uptime_seconds, u.hops_away
                 FROM nodes n
                 LEFT JOIN user_info u ON n.node_id = u.node_id
                 WHERE datetime(n.updated_at) > datetime('now', '-{} hours')
                 ORDER BY n.updated_at DESC
                 LIMIT ?
-            '''.format(hours, hours, hours, hours)
+            '''.format(hours)
             
-            cursor = await self.db.execute(query, (limit,))
+            cursor = await self.db.execute(nodes_query, (limit,))
             nodes = await cursor.fetchall()
             
+            if not nodes:
+                return web.json_response({'nodes': []})
+            
+            # Get all node IDs for batch queries
+            node_ids = [node[0] for node in nodes]
+            node_ids_placeholder = ','.join(['?' for _ in node_ids])
+            
+            # OPTIMIZATION: Batch query for packet counts
+            packet_counts_query = '''
+                SELECT p.from_node, 
+                       COUNT(*) as packet_count,
+                       COUNT(DISTINCT p.agent_id) as agent_count,
+                       GROUP_CONCAT(DISTINCT a.location_name) as seeing_agents
+                FROM packets p
+                JOIN agents a ON p.agent_id = a.agent_id
+                WHERE p.from_node IN ({}) 
+                AND datetime(p.timestamp) > datetime('now', '-{} hours')
+                GROUP BY p.from_node
+            '''.format(node_ids_placeholder, hours)
+            
+            packet_cursor = await self.db.execute(packet_counts_query, node_ids)
+            packet_data = {row[0]: row[1:] for row in await packet_cursor.fetchall()}
+            
+            # OPTIMIZATION: Batch query for routes (simplified - only get best routes)
+            routes_query = '''
+                SELECT r.target_node_id, r.agent_id, r.hop_count, r.route_path, 
+                       r.discovery_timestamp, a.location_name, a.agent_id as agent_short_id
+                FROM network_routes r
+                JOIN agents a ON r.agent_id = a.agent_id
+                WHERE r.target_node_id IN ({})
+                AND r.success = 1
+                AND datetime(r.discovery_timestamp) > datetime('now', '-{} hours')
+                GROUP BY r.target_node_id, r.agent_id
+                HAVING r.discovery_timestamp = MAX(r.discovery_timestamp)
+            '''.format(node_ids_placeholder, hours)
+            
+            routes_cursor = await self.db.execute(routes_query, node_ids)
+            routes_data = {}
+            for row in await routes_cursor.fetchall():
+                node_id = row[0]
+                if node_id not in routes_data:
+                    routes_data[node_id] = []
+                
+                route_path = json.loads(row[3]) if row[3] else []
+                routes_data[node_id].append({
+                    'agent_id': row[6],
+                    'location_name': row[5],
+                    'hop_count': row[2],
+                    'route_path': route_path,
+                    'discovery_timestamp': row[4],
+                    'route_type': 'traceroute'
+                })
+            
+            # OPTIMIZATION: Skip individual packet queries - just get counts above
+            
+            # Build result efficiently
             result = []
             for node in nodes:
+                node_id = node[0]
+                
+                # Get packet data from batch query
+                pkt_data = packet_data.get(node_id, (0, 0, ''))
+                
                 node_data = {
-                    'node_id': node[0],
+                    'node_id': node_id,
                     'short_name': node[1] or '',
                     'long_name': node[2] or '',
                     'macaddr': node[3] or '',
@@ -970,103 +1023,13 @@ class DistributedMeshyMcMapfaceServer:
                     'air_util_tx': node[14],
                     'uptime_seconds': node[15],
                     'hops_away': node[16],
-                    'packet_count': node[17],
-                    'agent_count': node[18],
-                    'seeing_agents': node[19].split(',') if node[19] else []
+                    'packet_count': pkt_data[0],
+                    'agent_count': pkt_data[1],
+                    'seeing_agents': pkt_data[2].split(',') if pkt_data[2] else [],
+                    'agent_routes': {route['agent_id']: route for route in routes_data.get(node_id, [])},
+                    'recent_packets': []  # Simplified - removed individual packet queries for performance
                 }
                 
-                # Get route information for each agent that can see this node
-                route_cursor = await self.db.execute('''
-                    SELECT DISTINCT r.agent_id, r.hop_count, r.route_path, r.discovery_timestamp,
-                           a.location_name, a.agent_id as agent_short_id
-                    FROM network_routes r
-                    JOIN agents a ON r.agent_id = a.agent_id
-                    WHERE r.target_node_id = ? AND r.success = 1
-                    AND datetime(r.discovery_timestamp) > datetime('now', '-{} hours')
-                    ORDER BY r.discovery_timestamp DESC
-                '''.format(hours), (node[0],))
-                
-                routes = await route_cursor.fetchall()
-                
-                # Also get topology data (traditional hop count) for comparison
-                topo_cursor = await self.db.execute('''
-                    SELECT nt.agent_id, nt.hops_away, a.location_name, a.agent_id as agent_short_id
-                    FROM node_topology nt
-                    JOIN agents a ON nt.agent_id = a.agent_id
-                    WHERE nt.node_id = ?
-                    AND datetime(nt.timestamp) > datetime('now', '-{} hours')
-                    ORDER BY nt.timestamp DESC
-                '''.format(hours), (node[0],))
-                
-                topology_data = await topo_cursor.fetchall()
-                
-                # Build routing information per agent
-                agent_routes = {}
-                
-                # Add traceroute data
-                for route in routes:
-                    agent_id = route[0]
-                    hop_count = route[1]
-                    route_path = json.loads(route[2]) if route[2] else []
-                    discovery_time = route[3]
-                    location_name = route[4]
-                    agent_short_id = route[5]
-                    
-                    agent_routes[agent_id] = {
-                        'agent_id': agent_short_id,
-                        'location_name': location_name,
-                        'hop_count': hop_count,
-                        'route_path': route_path,
-                        'discovery_timestamp': discovery_time,
-                        'route_type': 'traceroute'
-                    }
-                
-                # Add topology data for agents without traceroute data
-                for topo in topology_data:
-                    agent_id = topo[0]
-                    if agent_id not in agent_routes:
-                        agent_routes[agent_id] = {
-                            'agent_id': topo[3],
-                            'location_name': topo[2],
-                            'hop_count': topo[1],
-                            'route_path': [],
-                            'discovery_timestamp': None,
-                            'route_type': 'topology'
-                        }
-                
-                node_data['agent_routes'] = agent_routes
-                
-                # Get recent packet samples for this node
-                packet_cursor = await self.db.execute('''
-                    SELECT p.timestamp, p.type, p.payload, p.rssi, p.snr, 
-                           p.agent_id, a.location_name
-                    FROM packets p
-                    JOIN agents a ON p.agent_id = a.agent_id
-                    WHERE p.from_node = ? AND datetime(p.timestamp) > datetime('now', '-{} hours')
-                    ORDER BY p.timestamp DESC
-                    LIMIT 10
-                '''.format(hours), (node[0],))
-                
-                recent_packets = await packet_cursor.fetchall()
-                
-                packet_samples = []
-                for pkt in recent_packets:
-                    try:
-                        payload = json.loads(pkt[2]) if pkt[2] else None
-                    except:
-                        payload = pkt[2]
-                    
-                    packet_samples.append({
-                        'timestamp': pkt[0],
-                        'type': pkt[1],
-                        'payload': payload,
-                        'rssi': pkt[3],
-                        'snr': pkt[4],
-                        'agent_id': pkt[5],
-                        'agent_location': pkt[6]
-                    })
-                
-                node_data['recent_packets'] = packet_samples
                 result.append(node_data)
             
             return web.json_response({'nodes': result})
@@ -2904,33 +2867,84 @@ class DistributedMeshyMcMapfaceServer:
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        /* CSS Custom Properties for theming */
+        :root {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: white;
+            --bg-tertiary: #f8f9fa;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --accent-color: #2196F3;
+            --accent-hover: #e3f2fd;
+            --border-color: #ddd;
+            --shadow-color: rgba(0,0,0,0.1);
+            --success-color: #4CAF50;
+            --error-color: #f44336;
+        }
+        
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-tertiary: #2a2a2a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #b0b0b0;
+            --accent-color: #64b5f6;
+            --accent-hover: #1a237e;
+            --border-color: #404040;
+            --shadow-color: rgba(0,0,0,0.3);
+            --success-color: #81c784;
+            --error-color: #e57373;
+        }
+
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-primary); color: var(--text-primary); }
         .container { max-width: 1400px; margin: 0 auto; }
-        .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .nav { display: flex; gap: 20px; margin-bottom: 20px; }
-        .nav a { color: #2196F3; text-decoration: none; padding: 10px 20px; background: white; border-radius: 4px; }
-        .nav a:hover { background: #e3f2fd; }
-        .nav a.active { background: #2196F3; color: white; }
+        .header { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
+        .section { background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px var(--shadow-color); }
+        .nav { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; }
+        .nav a { color: var(--accent-color); text-decoration: none; padding: 10px 20px; background: var(--bg-secondary); border-radius: 4px; }
+        .nav a:hover { background: var(--accent-hover); }
+        .nav a.active { background: var(--accent-color); color: white; }
         .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
         .control-group { display: flex; gap: 5px; align-items: center; }
-        .control-group label { font-weight: bold; }
-        .control-group select, .control-group input { padding: 5px; border: 1px solid #ddd; border-radius: 4px; }
+        .control-group label { font-weight: bold; color: var(--text-primary); }
+        .control-group select, .control-group input { padding: 5px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); }
         #map { height: 600px; width: 100%; border-radius: 8px; }
-        .legend { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-top: 20px; }
-        .legend h3 { margin-top: 0; }
-        .legend-item { display: flex; align-items: center; margin: 10px 0; }
+        .legend { background: var(--bg-secondary); padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px var(--shadow-color); margin-top: 20px; }
+        .legend h3 { margin-top: 0; color: var(--text-primary); }
+        .legend-item { display: flex; align-items: center; margin: 10px 0; color: var(--text-primary); }
         .legend-icon { width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
         .stats-bar { display: flex; gap: 20px; margin-bottom: 20px; }
-        .stat { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; min-width: 120px; }
-        .stat-number { font-size: 1.5em; font-weight: bold; color: #2196F3; }
-        .stat-label { color: #666; font-size: 0.9em; }
+        .stat { background: var(--bg-secondary); padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px var(--shadow-color); text-align: center; min-width: 120px; }
+        .stat-number { font-size: 1.5em; font-weight: bold; color: var(--accent-color); }
+        .stat-label { color: var(--text-secondary); font-size: 0.9em; }
         
         /* Route information styling for popups */
         .leaflet-popup-content { max-width: 350px !important; }
-        .route-path { font-family: monospace; color: #666; font-size: 0.9em; }
-        .route-discovery-time { color: #888; font-size: 0.8em; }
+        .route-path { font-family: monospace; color: var(--text-secondary); font-size: 0.9em; }
+        .route-discovery-time { color: var(--text-secondary); font-size: 0.8em; }
+        
+        /* Dark mode toggle */
+        .theme-toggle {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-left: auto;
+        }
+        .theme-toggle:hover {
+            background: var(--accent-hover);
+        }
     </style>
+    <script>
+        // Theme initialization - must run before page renders to avoid flash
+        (function() {
+            const theme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
 </head>
 <body>
     <div class="container">
@@ -2945,6 +2959,7 @@ class DistributedMeshyMcMapfaceServer:
             <a href="/packets">Packets</a>
             <a href="/nodes">Nodes</a>
             <a href="/map" class="active">Map</a>
+            <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle">🌙 Dark</button>
         </div>
         
         <div class="stats-bar">
@@ -3400,6 +3415,30 @@ class DistributedMeshyMcMapfaceServer:
         document.getElementById('time-range').addEventListener('change', refreshMap);
         document.getElementById('show-connections').addEventListener('change', () => {
             displayConnections(packetData); // Use actual packet data
+        });
+        
+        // Theme toggle functions
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeToggleText(newTheme);
+        }
+        
+        function updateThemeToggleText(theme) {
+            const toggle = document.getElementById('theme-toggle');
+            if (toggle) {
+                toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+            }
+        }
+        
+        // Initialize theme toggle text on load
+        window.addEventListener('DOMContentLoaded', () => {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            updateThemeToggleText(currentTheme);
         });
         
         // Initialize
