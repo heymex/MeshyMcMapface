@@ -2433,8 +2433,8 @@ class DistributedMeshyMcMapfaceServer:
                 console.log('allNodes set to:', allNodes);
                 console.log('allNodes length:', allNodes.length);
                 
-                // Apply current filters to the new data
-                applyFilters();
+                // Apply current filters and search to the new data
+                applyFiltersAndSearch();
                 
             } catch (error) {
                 console.error('Error loading nodes:', error);
