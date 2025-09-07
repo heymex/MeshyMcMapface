@@ -2323,8 +2323,8 @@ class DistributedMeshyMcMapfaceServer:
                 <label for="hours-filter">Show nodes active in last:</label>
                 <select id="hours-filter" onchange="loadNodes()">
                     <option value="1">1 hour</option>
-                    <option value="6">6 hours</option>
-                    <option value="72" selected>72 hours</option>
+                    <option value="6" selected>6 hours</option>
+                    <option value="72">72 hours</option>
                     <option value="168">7 days</option>
                 </select>
                 
@@ -3661,8 +3661,8 @@ class DistributedMeshyMcMapfaceServer:
                 <label for="hours-filter">Time range:</label>
                 <select id="hours-filter" onchange="loadPackets()">
                     <option value="1">Last 1 hour</option>
-                    <option value="6">Last 6 hours</option>
-                    <option value="72" selected>Last 72 hours</option>
+                    <option value="6" selected>Last 6 hours</option>
+                    <option value="72">Last 72 hours</option>
                     <option value="168">Last 7 days</option>
                 </select>
                 
@@ -4437,12 +4437,12 @@ class DistributedMeshyMcMapfaceServer:
                 const lastSeen = new Date(agent.last_seen);
                 const isActive = (new Date() - lastSeen) < (60 * 60 * 1000); // 1 hour
                 
-                // Create agent marker (larger, different style)
+                // Create agent marker (smaller, less prominent)
                 const marker = L.circleMarker([agent.coordinates[0], agent.coordinates[1]], {
-                    radius: 12,
+                    radius: 6,
                     fillColor: '#2196F3',
                     color: '#fff',
-                    weight: 3,
+                    weight: 2,
                     opacity: 1,
                     fillOpacity: 0.9
                 });
