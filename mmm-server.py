@@ -1100,22 +1100,44 @@ class DistributedMeshyMcMapfaceServer:
             cursor = await self.db.execute(telemetry_query, (node_id,))
             telemetry_data = await cursor.fetchall()
             
-            # Get direct neighbors (nodes this node has directly communicated with)
+            # Get direct RF neighbors for this specific node based on:
+            # 1. Packets FROM this node received by agents with strong signal (indicating these agents' coverage areas can hear this node)
+            # 2. Look for nodes that consistently appear in the same coverage areas with strong signals
             neighbors_query = '''
-                SELECT DISTINCT to_node as neighbor_node,
-                       AVG(rssi) as avg_rssi,
-                       AVG(snr) as avg_snr,
-                       COUNT(*) as packet_count,
-                       MAX(timestamp) as last_contact
-                FROM packets
-                WHERE from_node = ?
-                AND to_node NOT IN ('^all', '^local')
-                AND to_node IS NOT NULL
-                AND datetime(timestamp) > datetime('now', '-{} hours')
-                GROUP BY to_node
-                ORDER BY packet_count DESC
+                WITH this_node_coverage AS (
+                    -- Find agents that receive this node's broadcasts with strong signal
+                    SELECT DISTINCT p1.agent_id, AVG(p1.rssi) as this_node_rssi, AVG(p1.snr) as this_node_snr
+                    FROM packets p1
+                    WHERE p1.from_node = ?
+                    AND p1.to_node = '^all'
+                    AND ((p1.rssi IS NOT NULL AND p1.rssi > -85) OR (p1.snr IS NOT NULL AND p1.snr > -5))
+                    AND datetime(p1.timestamp) > datetime('now', '-{} hours')
+                    GROUP BY p1.agent_id
+                ),
+                neighbor_candidates AS (
+                    -- Find other nodes that these same agents hear with strong signal
+                    SELECT DISTINCT p2.from_node as neighbor_node,
+                           AVG(p2.rssi) as avg_rssi,
+                           AVG(p2.snr) as avg_snr,
+                           COUNT(DISTINCT p2.agent_id) as agent_count,
+                           COUNT(*) as packet_count,
+                           MAX(p2.timestamp) as last_contact
+                    FROM packets p2
+                    INNER JOIN this_node_coverage tnc ON p2.agent_id = tnc.agent_id
+                    WHERE p2.from_node != ?
+                    AND p2.to_node = '^all'
+                    AND p2.from_node NOT IN ('^all', '^local')
+                    AND ((p2.rssi IS NOT NULL AND p2.rssi > -85) OR (p2.snr IS NOT NULL AND p2.snr > -5))
+                    AND datetime(p2.timestamp) > datetime('now', '-{} hours')
+                    GROUP BY p2.from_node
+                    HAVING COUNT(DISTINCT p2.agent_id) >= 1  -- Must be heard by at least one agent that also hears target node
+                    AND COUNT(*) >= 3  -- Multiple packets for reliability
+                )
+                SELECT neighbor_node, avg_rssi, avg_snr, packet_count, last_contact
+                FROM neighbor_candidates
+                ORDER BY agent_count DESC, avg_rssi DESC, packet_count DESC
                 LIMIT 20
-            '''.format(hours)
+            '''.format(hours, hours)
             
             cursor = await self.db.execute(neighbors_query, (node_id,))
             neighbors_data = await cursor.fetchall()
