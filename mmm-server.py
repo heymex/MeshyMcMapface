@@ -31,6 +31,12 @@ class DistributedMeshyMcMapfaceServer:
         self.bind_port = self.config.getint('server', 'port', fallback=8082)
         self.db_path = self.config.get('database', 'path', fallback='distributed_meshview.db')
         
+        # Map configuration
+        self.map_center_lat = self.config.getfloat('map', 'center_lat', fallback=39.8283)
+        self.map_center_lon = self.config.getfloat('map', 'center_lon', fallback=-98.5795)
+        self.map_zoom_level = self.config.getint('map', 'zoom_level', fallback=4)
+        self.map_force_center = self.config.getboolean('map', 'force_center', fallback=False)
+        
         # API Keys for agents
         self.api_keys = {}
         if self.config.has_section('api_keys'):
@@ -242,6 +248,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/connections', self.get_connections)
         self.app.router.add_get('/api/routes', self.get_routes)
         self.app.router.add_get('/api/stats', self.get_stats)
+        self.app.router.add_get('/api/map/config', self.get_map_config)
         self.app.router.add_get('/api/debug/agents', self.debug_agents)  # Debug endpoint
         self.app.router.add_get('/api/debug/nodes', self.debug_nodes)  # Debug nodes
         self.app.router.add_get('/api/debug/packets', self.debug_packets)  # Debug packets
@@ -1256,6 +1263,21 @@ class DistributedMeshyMcMapfaceServer:
             
         except Exception as e:
             self.logger.error(f"Error getting stats: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def get_map_config(self, request):
+        """Get map configuration settings"""
+        try:
+            result = {
+                'center_lat': self.map_center_lat,
+                'center_lon': self.map_center_lon,
+                'zoom_level': self.map_zoom_level,
+                'force_center': self.map_force_center
+            }
+            return web.json_response(result)
+            
+        except Exception as e:
+            self.logger.error(f"Error getting map config: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
     async def get_topology(self, request):
@@ -4262,9 +4284,29 @@ class DistributedMeshyMcMapfaceServer:
         let agentData = [];
         let packetData = [];
         
-        // Initialize map
-        function initMap() {
-            map = L.map('map').setView([39.8283, -98.5795], 4); // Center of US
+        // Initialize map with configuration
+        async function initMap() {
+            try {
+                // Fetch map configuration from server
+                const configResponse = await fetch('/api/map/config');
+                const config = await configResponse.json();
+                
+                // Initialize map with configured center and zoom
+                map = L.map('map').setView([config.center_lat, config.center_lon], config.zoom_level);
+                
+                // Store config for later use
+                window.mapConfig = config;
+            } catch (error) {
+                console.error('Error loading map config:', error);
+                // Fallback to default center (center of US)
+                map = L.map('map').setView([39.8283, -98.5795], 4);
+                window.mapConfig = {
+                    center_lat: 39.8283,
+                    center_lon: -98.5795,
+                    zoom_level: 4,
+                    force_center: false
+                };
+            }
             
             // Add tile layer
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -4584,8 +4626,13 @@ class DistributedMeshyMcMapfaceServer:
             loadMapData();
         }
         
-        // Auto-fit map to show all markers
+        // Auto-fit map to show all markers (unless force_center is enabled)
         function fitMapToMarkers() {
+            // If force_center is enabled, don't auto-fit to markers
+            if (window.mapConfig && window.mapConfig.force_center) {
+                return;
+            }
+            
             if (markers.size > 0) {
                 const group = new L.featureGroup([...markers.values()]);
                 map.fitBounds(group.getBounds().pad(0.1));
@@ -4642,8 +4689,11 @@ class DistributedMeshyMcMapfaceServer:
         });
         
         // Initialize
-        initMap();
-        loadMapData();
+        async function init() {
+            await initMap();
+            loadMapData();
+        }
+        init();
         
         // Auto-refresh every 30 seconds
         setInterval(loadMapData, 30000);
@@ -5071,6 +5121,13 @@ def create_sample_config():
     
     config['database'] = {
         'path': 'distributed_meshview.db'
+    }
+    
+    config['map'] = {
+        'center_lat': '39.8283',
+        'center_lon': '-98.5795', 
+        'zoom_level': '4',
+        'force_center': 'false'
     }
     
     config['api_keys'] = {

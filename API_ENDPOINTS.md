@@ -269,6 +269,22 @@ Get overall system statistics.
 }
 ```
 
+#### Get Map Configuration
+```
+GET /api/map/config
+```
+Get map display configuration settings.
+
+**Response:**
+```json
+{
+  "center_lat": 39.8283,
+  "center_lon": -98.5795,
+  "zoom_level": 4,
+  "force_center": false
+}
+```
+
 ## 🛠️ Debug Endpoints
 
 ### Debug Agents
