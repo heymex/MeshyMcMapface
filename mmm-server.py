@@ -1080,10 +1080,10 @@ class DistributedMeshyMcMapfaceServer:
                 FROM packets p
                 JOIN agents a ON p.agent_id = a.agent_id
                 WHERE p.from_node = ?
-                AND datetime(p.timestamp) > datetime('now', '-{} hours')
-            '''.format(hours)
+                AND datetime(p.timestamp) > datetime('now', '-' || ? || ' hours')
+            '''
             
-            cursor = await self.db.execute(packet_stats_query, (node_id,))
+            cursor = await self.db.execute(packet_stats_query, (node_id, hours))
             packet_stats = await cursor.fetchone()
             
             # Get recent telemetry data for charts
@@ -1092,12 +1092,12 @@ class DistributedMeshyMcMapfaceServer:
                 FROM packets 
                 WHERE from_node = ?
                 AND type IN ('TELEMETRY_APP', 'DEVICE_METRICS', 'ENVIRONMENT_METRICS')
-                AND datetime(timestamp) > datetime('now', '-{} hours')
+                AND datetime(timestamp) > datetime('now', '-' || ? || ' hours')
                 ORDER BY timestamp DESC
                 LIMIT 50
-            '''.format(hours)
+            '''
             
-            cursor = await self.db.execute(telemetry_query, (node_id,))
+            cursor = await self.db.execute(telemetry_query, (node_id, hours))
             telemetry_data = await cursor.fetchall()
             
             # Get direct RF neighbors for this specific node based on:
@@ -1111,7 +1111,7 @@ class DistributedMeshyMcMapfaceServer:
                     WHERE p1.from_node = ?
                     AND p1.to_node = '^all'
                     AND ((p1.rssi IS NOT NULL AND p1.rssi > -85) OR (p1.snr IS NOT NULL AND p1.snr > -5))
-                    AND datetime(p1.timestamp) > datetime('now', '-{} hours')
+                    AND datetime(p1.timestamp) > datetime('now', '-' || ? || ' hours')
                     GROUP BY p1.agent_id
                 ),
                 neighbor_candidates AS (
@@ -1128,7 +1128,7 @@ class DistributedMeshyMcMapfaceServer:
                     AND p2.to_node = '^all'
                     AND p2.from_node NOT IN ('^all', '^local')
                     AND ((p2.rssi IS NOT NULL AND p2.rssi > -85) OR (p2.snr IS NOT NULL AND p2.snr > -5))
-                    AND datetime(p2.timestamp) > datetime('now', '-{} hours')
+                    AND datetime(p2.timestamp) > datetime('now', '-' || ? || ' hours')
                     GROUP BY p2.from_node
                     HAVING COUNT(DISTINCT p2.agent_id) >= 1  -- Must be heard by at least one agent that also hears target node
                     AND COUNT(*) >= 3  -- Multiple packets for reliability
@@ -1137,9 +1137,9 @@ class DistributedMeshyMcMapfaceServer:
                 FROM neighbor_candidates
                 ORDER BY agent_count DESC, avg_rssi DESC, packet_count DESC
                 LIMIT 20
-            '''.format(hours, hours)
+            '''
             
-            cursor = await self.db.execute(neighbors_query, (node_id,))
+            cursor = await self.db.execute(neighbors_query, (node_id, hours, node_id, hours))
             neighbors_data = await cursor.fetchall()
             
             # Get neighbor names
