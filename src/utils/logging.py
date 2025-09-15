@@ -1,10 +1,12 @@
 """
 Centralized logging configuration for MeshyMcMapface
 """
+import json
 import logging
 import logging.handlers
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -15,7 +17,7 @@ def setup_logging(
     max_file_size: int = 10 * 1024 * 1024,  # 10MB
     backup_count: int = 5,
     format_string: Optional[str] = None,
-    syslog_configs: Optional[List[Dict]] = None
+    json_tcp_configs: Optional[List[Dict]] = None
 ) -> logging.Logger:
     """
     Set up centralized logging configuration
@@ -26,8 +28,8 @@ def setup_logging(
         max_file_size: Maximum size of log file before rotation
         backup_count: Number of backup files to keep
         format_string: Custom format string
-        syslog_configs: List of syslog configurations
-                       Each config: {'host': str, 'port': int, 'protocol': 'tcp'|'udp', 'facility': str}
+        json_tcp_configs: List of JSON TCP logging configurations
+                         Each config: {'host': str, 'port': int, 'application': str, 'environment': str}
     
     Returns:
         Configured logger
@@ -71,85 +73,142 @@ def setup_logging(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     
-    # Syslog handlers (optional)
-    if syslog_configs:
-        for syslog_config in syslog_configs:
+    # JSON TCP handlers (optional)
+    if json_tcp_configs:
+        for json_tcp_config in json_tcp_configs:
             try:
-                syslog_handler = create_syslog_handler(syslog_config, numeric_level, formatter)
-                if syslog_handler:
-                    logger.addHandler(syslog_handler)
+                json_tcp_handler = create_json_tcp_handler(json_tcp_config, numeric_level)
+                if json_tcp_handler:
+                    logger.addHandler(json_tcp_handler)
             except Exception as e:
-                print(f"Warning: Failed to create syslog handler for {syslog_config}: {e}", file=sys.stderr)
+                print(f"Warning: Failed to create JSON TCP handler for {json_tcp_config}: {e}", file=sys.stderr)
     
     return logger
 
 
-def create_syslog_handler(syslog_config: Dict, level: int, formatter: logging.Formatter) -> Optional[logging.Handler]:
+class JsonTcpHandler(logging.Handler):
     """
-    Create a syslog handler with the specified configuration
+    Custom logging handler that sends structured JSON logs over TCP
+    """
+    
+    def __init__(self, host: str, port: int, application: str = "meshymcmapface", environment: str = "production"):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.application = application
+        self.environment = environment
+        self.socket = None
+        
+    def emit(self, record: logging.LogRecord):
+        """
+        Emit a log record as JSON over TCP
+        """
+        try:
+            # Create JSON log entry
+            log_entry = {
+                "timestamp": time.time(),
+                "iso_timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+                "application": self.application,
+                "environment": self.environment,
+                "host": socket.gethostname(),
+                "thread": record.thread,
+                "thread_name": record.threadName,
+                "process": record.process,
+                "module": record.module,
+                "function": record.funcName,
+                "line": record.lineno
+            }
+            
+            # Add exception info if present
+            if record.exc_info:
+                log_entry["exception"] = self.format(record)
+            
+            # Convert to JSON string with newline delimiter
+            json_message = json.dumps(log_entry, default=str) + '\n'
+            
+            # Send over TCP
+            self._send_message(json_message.encode('utf-8'))
+            
+        except Exception as e:
+            # Don't let logging errors crash the application
+            print(f"Error in JsonTcpHandler.emit: {e}", file=sys.stderr)
+    
+    def _send_message(self, message: bytes):
+        """
+        Send message over TCP with connection retry logic
+        """
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Create new socket if needed
+                if self.socket is None:
+                    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.socket.settimeout(5.0)  # 5 second timeout
+                    self.socket.connect((self.host, self.port))
+                
+                # Send the message
+                self.socket.sendall(message)
+                return  # Success
+                
+            except (socket.error, ConnectionError, OSError) as e:
+                # Close the socket and retry
+                self._close_socket()
+                retry_count += 1
+                
+                if retry_count >= max_retries:
+                    print(f"Failed to send log message after {max_retries} retries: {e}", file=sys.stderr)
+                else:
+                    time.sleep(0.1 * retry_count)  # Brief backoff
+    
+    def _close_socket(self):
+        """
+        Close the socket connection
+        """
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            finally:
+                self.socket = None
+    
+    def close(self):
+        """
+        Close the handler and socket
+        """
+        self._close_socket()
+        super().close()
+
+
+def create_json_tcp_handler(config: Dict, level: int) -> Optional[JsonTcpHandler]:
+    """
+    Create a JSON TCP handler with the specified configuration
     
     Args:
-        syslog_config: Dictionary with 'host', 'port', 'protocol', 'facility'
+        config: Dictionary with 'host', 'port', 'application', 'environment'
         level: Logging level
-        formatter: Log formatter
         
     Returns:
-        Configured syslog handler or None if creation failed
+        Configured JSON TCP handler or None if creation failed
     """
     try:
-        host = syslog_config.get('host', 'localhost')
-        port = int(syslog_config.get('port', 514))
-        protocol = syslog_config.get('protocol', 'udp').lower()
-        facility = syslog_config.get('facility', 'local0')
+        host = config.get('host', 'localhost')
+        port = int(config.get('port', 5140))
+        application = config.get('application', 'meshymcmapface')
+        environment = config.get('environment', 'production')
         
-        # Map facility string to SysLogHandler facility constant
-        facility_map = {
-            'kern': logging.handlers.SysLogHandler.LOG_KERN,
-            'user': logging.handlers.SysLogHandler.LOG_USER,
-            'mail': logging.handlers.SysLogHandler.LOG_MAIL,
-            'daemon': logging.handlers.SysLogHandler.LOG_DAEMON,
-            'auth': logging.handlers.SysLogHandler.LOG_AUTH,
-            'syslog': logging.handlers.SysLogHandler.LOG_SYSLOG,
-            'lpr': logging.handlers.SysLogHandler.LOG_LPR,
-            'news': logging.handlers.SysLogHandler.LOG_NEWS,
-            'uucp': logging.handlers.SysLogHandler.LOG_UUCP,
-            'cron': logging.handlers.SysLogHandler.LOG_CRON,
-            'authpriv': logging.handlers.SysLogHandler.LOG_AUTHPRIV,
-            'ftp': logging.handlers.SysLogHandler.LOG_FTP,
-            'local0': logging.handlers.SysLogHandler.LOG_LOCAL0,
-            'local1': logging.handlers.SysLogHandler.LOG_LOCAL1,
-            'local2': logging.handlers.SysLogHandler.LOG_LOCAL2,
-            'local3': logging.handlers.SysLogHandler.LOG_LOCAL3,
-            'local4': logging.handlers.SysLogHandler.LOG_LOCAL4,
-            'local5': logging.handlers.SysLogHandler.LOG_LOCAL5,
-            'local6': logging.handlers.SysLogHandler.LOG_LOCAL6,
-            'local7': logging.handlers.SysLogHandler.LOG_LOCAL7,
-        }
+        handler = JsonTcpHandler(host, port, application, environment)
+        handler.setLevel(level)
         
-        facility_code = facility_map.get(facility.lower(), logging.handlers.SysLogHandler.LOG_LOCAL0)
-        
-        # Create socket type based on protocol
-        if protocol == 'tcp':
-            socktype = socket.SOCK_STREAM
-        elif protocol == 'udp':
-            socktype = socket.SOCK_DGRAM
-        else:
-            raise ValueError(f"Invalid syslog protocol: {protocol}. Must be 'tcp' or 'udp'")
-        
-        # Create syslog handler
-        syslog_handler = logging.handlers.SysLogHandler(
-            address=(host, port),
-            facility=facility_code,
-            socktype=socktype
-        )
-        
-        syslog_handler.setLevel(level)
-        syslog_handler.setFormatter(formatter)
-        
-        return syslog_handler
+        return handler
         
     except Exception as e:
-        print(f"Error creating syslog handler: {e}", file=sys.stderr)
+        print(f"Error creating JSON TCP handler: {e}", file=sys.stderr)
         return None
 
 

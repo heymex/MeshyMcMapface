@@ -42,26 +42,26 @@ def main():
         print("Use --create-config to generate a sample configuration.")
         return
     
-    # Load syslog configuration if available
-    syslog_configs = None
+    # Load JSON TCP logging configuration if available
+    json_tcp_configs = None
     try:
         config_manager = ConfigManager(args.config)
-        syslog_config_objects = config_manager.load_syslog_configs()
-        if syslog_config_objects:
-            syslog_configs = [
+        json_tcp_config_objects = config_manager.load_json_tcp_log_configs()
+        if json_tcp_config_objects:
+            json_tcp_configs = [
                 {
                     'host': config.host,
                     'port': config.port,
-                    'protocol': config.protocol,
-                    'facility': config.facility
+                    'application': config.application,
+                    'environment': config.environment
                 }
-                for config in syslog_config_objects
+                for config in json_tcp_config_objects
             ]
     except Exception as e:
-        print(f"Warning: Could not load syslog configuration: {e}")
+        print(f"Warning: Could not load JSON TCP logging configuration: {e}")
     
-    # Setup logging with syslog support
-    setup_logging(level=args.log_level, log_file=args.log_file, syslog_configs=syslog_configs)
+    # Setup logging with JSON TCP support
+    setup_logging(level=args.log_level, log_file=args.log_file, json_tcp_configs=json_tcp_configs)
     
     try:
         # Create agent

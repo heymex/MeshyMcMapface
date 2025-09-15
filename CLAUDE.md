@@ -115,37 +115,50 @@ Agents can report to multiple servers simultaneously with different configuratio
 - Multiple server configurations with priorities
 - Route discovery settings
 - Priority node monitoring
-- Syslog destinations for remote logging
+- JSON TCP logging destinations for remote logging
 
 **Server Config** (`server_config.ini`):
 - Server binding and database settings
 - Agent API keys for authentication
 - Web dashboard configuration
-- Syslog destinations for remote logging
+- JSON TCP logging destinations for remote logging
 
-### Syslog Configuration
+### JSON TCP Logging Configuration
 
-Both agent and server support logging to remote syslog hosts:
+Both agent and server support structured JSON logging to remote log collectors over TCP:
 
 ```ini
-# Example syslog configurations in config files
-[syslog_primary]
-host = syslog.example.com
-port = 514
-protocol = udp
-facility = local0
+# Example JSON TCP logging configurations in config files
+[json_tcp_log_primary]
+host = logs.example.com
+port = 5140
+application = meshymcmapface-agent
+environment = production
 
-[syslog_backup]
-host = backup-syslog.example.com
-port = 1514
-protocol = tcp
-facility = local1
+[json_tcp_log_backup]
+host = backup-logs.example.com
+port = 5141
+application = meshymcmapface-agent
+environment = production
 ```
 
 **Supported Options:**
-- **Protocol**: `tcp` or `udp`
-- **Port**: Any valid port (default: 514)
-- **Facility**: `kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, `authpriv`, `ftp`, `local0`-`local7`
+- **Host**: Target log collector hostname or IP
+- **Port**: TCP port for log collector (default: 5140)
+- **Application**: Application identifier in logs (default: meshymcmapface)
+- **Environment**: Environment tag (default: production)
+
+**Log Format**: Each log entry is sent as a JSON object with newline delimiter containing:
+- `timestamp`: Unix timestamp
+- `iso_timestamp`: ISO 8601 formatted timestamp
+- `level`: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `logger`: Logger name
+- `message`: Log message
+- `application`: Application identifier
+- `environment`: Environment tag
+- `host`: Hostname of the logging system
+- `module`, `function`, `line`: Code location information
+- `thread`, `process`: Execution context
 
 ## Web Dashboard
 
@@ -237,5 +250,5 @@ The system includes full systemd integration for production deployment:
 - **Security hardening**: Restricted permissions, private temp, read-only system
 - **Resource limits**: Memory and CPU quotas
 - **Auto-restart**: Automatic restart on failure with backoff
-- **Logging integration**: Full journalctl support + optional syslog
+- **Logging integration**: Full journalctl support + optional JSON TCP logging
 - **Network security**: IP restrictions for server service

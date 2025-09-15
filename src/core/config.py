@@ -66,12 +66,12 @@ class MeshtasticConfig:
 
 
 @dataclass
-class SyslogConfig:
-    """Configuration for a single syslog destination"""
+class JsonTcpLogConfig:
+    """Configuration for a single JSON TCP logging destination"""
     host: str
-    port: int = 514
-    protocol: str = 'udp'  # 'tcp' or 'udp'
-    facility: str = 'local0'
+    port: int = 5140
+    application: str = 'meshymcmapface'
+    environment: str = 'production'
 
 
 class ConfigManager:
@@ -148,26 +148,26 @@ class ConfigManager:
         except Exception as e:
             raise ValueError(f"Error loading Meshtastic configuration: {e}")
     
-    def load_syslog_configs(self) -> List[SyslogConfig]:
-        """Load syslog configurations"""
-        syslog_configs = []
+    def load_json_tcp_log_configs(self) -> List[JsonTcpLogConfig]:
+        """Load JSON TCP logging configurations"""
+        json_tcp_configs = []
         
         for section_name in self.config.sections():
-            if section_name.startswith('syslog_'):
+            if section_name.startswith('json_tcp_log_'):
                 try:
                     section = dict(self.config.items(section_name))
-                    syslog_config = SyslogConfig(
+                    json_tcp_config = JsonTcpLogConfig(
                         host=section['host'],
-                        port=int(section.get('port', 514)),
-                        protocol=section.get('protocol', 'udp').lower(),
-                        facility=section.get('facility', 'local0').lower()
+                        port=int(section.get('port', 5140)),
+                        application=section.get('application', 'meshymcmapface'),
+                        environment=section.get('environment', 'production')
                     )
-                    syslog_configs.append(syslog_config)
+                    json_tcp_configs.append(json_tcp_config)
                 except Exception as e:
-                    self.logger.error(f"Error loading syslog config from {section_name}: {e}")
+                    self.logger.error(f"Error loading JSON TCP log config from {section_name}: {e}")
                     continue
         
-        return syslog_configs
+        return json_tcp_configs
     
     def load_server_configs(self) -> Dict[str, ServerConfig]:
         """Load all server configurations"""
@@ -308,19 +308,19 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         'delay_between_traces': '3.0'
     }
     
-    # Syslog configuration examples (commented out by default)
-    config['# syslog_primary'] = {
-        '# host': 'syslog.example.com',
-        '# port': '514',
-        '# protocol': 'udp',
-        '# facility': 'local0'
+    # JSON TCP logging configuration examples (commented out by default)
+    config['# json_tcp_log_primary'] = {
+        '# host': 'logs.example.com',
+        '# port': '5140',
+        '# application': 'meshymcmapface-agent',
+        '# environment': 'production'
     }
     
-    config['# syslog_backup'] = {
-        '# host': 'backup-syslog.example.com', 
-        '# port': '1514',
-        '# protocol': 'tcp',
-        '# facility': 'local1'
+    config['# json_tcp_log_backup'] = {
+        '# host': 'backup-logs.example.com', 
+        '# port': '5141',
+        '# application': 'meshymcmapface-agent',
+        '# environment': 'production'
     }
     
     with open(filename, 'w') as f:
