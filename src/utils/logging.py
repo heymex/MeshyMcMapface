@@ -5,6 +5,7 @@ import json
 import logging
 import logging.handlers
 import socket
+import ssl
 import sys
 import time
 from pathlib import Path
@@ -91,13 +92,15 @@ class JsonTcpHandler(logging.Handler):
     Custom logging handler that sends structured JSON logs over TCP
     """
     
-    def __init__(self, host: str, port: int, application: str = "meshymcmapface", environment: str = "production", auth_token: Optional[str] = None):
+    def __init__(self, host: str, port: int, application: str = "meshymcmapface", environment: str = "production", auth_token: Optional[str] = None, use_tls: bool = False, verify_ssl: bool = True):
         super().__init__()
         self.host = host
         self.port = port
         self.application = application
         self.environment = environment
         self.auth_token = auth_token
+        self.use_tls = use_tls
+        self.verify_ssl = verify_ssl
         self.socket = None
         self.authenticated = False
         
@@ -149,8 +152,19 @@ class JsonTcpHandler(logging.Handler):
             try:
                 # Create new socket if needed
                 if self.socket is None:
-                    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.socket.settimeout(5.0)  # 5 second timeout
+                    raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    raw_socket.settimeout(5.0)  # 5 second timeout
+                    
+                    # Wrap with TLS if requested
+                    if self.use_tls:
+                        context = ssl.create_default_context()
+                        if not self.verify_ssl:
+                            context.check_hostname = False
+                            context.verify_mode = ssl.CERT_NONE
+                        self.socket = context.wrap_socket(raw_socket, server_hostname=self.host)
+                    else:
+                        self.socket = raw_socket
+                    
                     self.socket.connect((self.host, self.port))
                     self.authenticated = False  # Reset authentication status on new connection
                 
@@ -200,7 +214,7 @@ def create_json_tcp_handler(config: Dict, level: int) -> Optional[JsonTcpHandler
     Create a JSON TCP handler with the specified configuration
     
     Args:
-        config: Dictionary with 'host', 'port', 'application', 'environment', 'auth_token'
+        config: Dictionary with 'host', 'port', 'application', 'environment', 'auth_token', 'use_tls', 'verify_ssl'
         level: Logging level
         
     Returns:
@@ -212,8 +226,16 @@ def create_json_tcp_handler(config: Dict, level: int) -> Optional[JsonTcpHandler
         application = config.get('application', 'meshymcmapface')
         environment = config.get('environment', 'production')
         auth_token = config.get('auth_token')
+        use_tls = config.get('use_tls', False)
+        verify_ssl = config.get('verify_ssl', True)
         
-        handler = JsonTcpHandler(host, port, application, environment, auth_token)
+        # Convert string representations to boolean
+        if isinstance(use_tls, str):
+            use_tls = use_tls.lower() in ('true', '1', 'yes', 'on')
+        if isinstance(verify_ssl, str):
+            verify_ssl = verify_ssl.lower() in ('true', '1', 'yes', 'on')
+        
+        handler = JsonTcpHandler(host, port, application, environment, auth_token, use_tls, verify_ssl)
         handler.setLevel(level)
         
         return handler

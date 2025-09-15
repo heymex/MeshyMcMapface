@@ -135,6 +135,8 @@ port = 5140
 application = meshymcmapface-agent
 environment = production
 auth_token = your-auth-token-here
+use_tls = true
+verify_ssl = true
 
 [json_tcp_log_backup]
 host = backup-logs.example.com
@@ -142,6 +144,8 @@ port = 5141
 application = meshymcmapface-agent
 environment = production
 auth_token = your-backup-auth-token-here
+use_tls = true
+verify_ssl = true
 ```
 
 **Supported Options:**
@@ -150,6 +154,8 @@ auth_token = your-backup-auth-token-here
 - **Application**: Application identifier in logs (default: meshymcmapface)
 - **Environment**: Environment tag (default: production)
 - **Auth Token**: Optional authentication token for secure log collectors (e.g., Cribl Stream)
+- **Use TLS**: Enable TLS/SSL encryption (default: false, recommended: true for Cribl Stream)
+- **Verify SSL**: Verify SSL certificates (default: true, set to false for self-signed certs)
 
 **Authentication**: When an auth_token is provided, the client sends an authentication message as the first message after connecting:
 ```json

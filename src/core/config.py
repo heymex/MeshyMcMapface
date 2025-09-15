@@ -73,6 +73,8 @@ class JsonTcpLogConfig:
     application: str = 'meshymcmapface'
     environment: str = 'production'
     auth_token: Optional[str] = None
+    use_tls: bool = False
+    verify_ssl: bool = True
 
 
 class ConfigManager:
@@ -162,7 +164,9 @@ class ConfigManager:
                         port=int(section.get('port', 5140)),
                         application=section.get('application', 'meshymcmapface'),
                         environment=section.get('environment', 'production'),
-                        auth_token=section.get('auth_token')
+                        auth_token=section.get('auth_token'),
+                        use_tls=section.get('use_tls', 'false').lower() in ('true', '1', 'yes', 'on'),
+                        verify_ssl=section.get('verify_ssl', 'true').lower() in ('true', '1', 'yes', 'on')
                     )
                     json_tcp_configs.append(json_tcp_config)
                 except Exception as e:
@@ -316,7 +320,9 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         '# port': '5140',
         '# application': 'meshymcmapface-agent',
         '# environment': 'production',
-        '# auth_token': 'your-auth-token-here'
+        '# auth_token': 'your-auth-token-here',
+        '# use_tls': 'true',
+        '# verify_ssl': 'true'
     }
     
     config['# json_tcp_log_backup'] = {
@@ -324,7 +330,9 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         '# port': '5141',
         '# application': 'meshymcmapface-agent',
         '# environment': 'production',
-        '# auth_token': 'your-backup-auth-token-here'
+        '# auth_token': 'your-backup-auth-token-here',
+        '# use_tls': 'true',
+        '# verify_ssl': 'true'
     }
     
     with open(filename, 'w') as f:

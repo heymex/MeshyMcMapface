@@ -5202,7 +5202,9 @@ async def main():
                     'port': config.port,
                     'application': config.application,
                     'environment': config.environment,
-                    'auth_token': config.auth_token
+                    'auth_token': config.auth_token,
+                    'use_tls': config.use_tls,
+                    'verify_ssl': config.verify_ssl
                 }
                 for config in json_tcp_config_objects
             ]
