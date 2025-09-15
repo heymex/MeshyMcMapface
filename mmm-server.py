@@ -5201,7 +5201,8 @@ async def main():
                     'host': config.host,
                     'port': config.port,
                     'application': config.application,
-                    'environment': config.environment
+                    'environment': config.environment,
+                    'auth_token': config.auth_token
                 }
                 for config in json_tcp_config_objects
             ]

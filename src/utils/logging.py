@@ -91,13 +91,15 @@ class JsonTcpHandler(logging.Handler):
     Custom logging handler that sends structured JSON logs over TCP
     """
     
-    def __init__(self, host: str, port: int, application: str = "meshymcmapface", environment: str = "production"):
+    def __init__(self, host: str, port: int, application: str = "meshymcmapface", environment: str = "production", auth_token: Optional[str] = None):
         super().__init__()
         self.host = host
         self.port = port
         self.application = application
         self.environment = environment
+        self.auth_token = auth_token
         self.socket = None
+        self.authenticated = False
         
     def emit(self, record: logging.LogRecord):
         """
@@ -138,7 +140,7 @@ class JsonTcpHandler(logging.Handler):
     
     def _send_message(self, message: bytes):
         """
-        Send message over TCP with connection retry logic
+        Send message over TCP with connection retry logic and authentication
         """
         max_retries = 3
         retry_count = 0
@@ -150,8 +152,15 @@ class JsonTcpHandler(logging.Handler):
                     self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     self.socket.settimeout(5.0)  # 5 second timeout
                     self.socket.connect((self.host, self.port))
+                    self.authenticated = False  # Reset authentication status on new connection
                 
-                # Send the message
+                # Send authentication token if required and not yet authenticated
+                if self.auth_token and not self.authenticated:
+                    auth_message = json.dumps({"auth_token": self.auth_token}) + '\n'
+                    self.socket.sendall(auth_message.encode('utf-8'))
+                    self.authenticated = True
+                
+                # Send the actual log message
                 self.socket.sendall(message)
                 return  # Success
                 
@@ -176,6 +185,7 @@ class JsonTcpHandler(logging.Handler):
                 pass
             finally:
                 self.socket = None
+                self.authenticated = False
     
     def close(self):
         """
@@ -190,7 +200,7 @@ def create_json_tcp_handler(config: Dict, level: int) -> Optional[JsonTcpHandler
     Create a JSON TCP handler with the specified configuration
     
     Args:
-        config: Dictionary with 'host', 'port', 'application', 'environment'
+        config: Dictionary with 'host', 'port', 'application', 'environment', 'auth_token'
         level: Logging level
         
     Returns:
@@ -201,8 +211,9 @@ def create_json_tcp_handler(config: Dict, level: int) -> Optional[JsonTcpHandler
         port = int(config.get('port', 5140))
         application = config.get('application', 'meshymcmapface')
         environment = config.get('environment', 'production')
+        auth_token = config.get('auth_token')
         
-        handler = JsonTcpHandler(host, port, application, environment)
+        handler = JsonTcpHandler(host, port, application, environment, auth_token)
         handler.setLevel(level)
         
         return handler

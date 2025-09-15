@@ -134,12 +134,14 @@ host = logs.example.com
 port = 5140
 application = meshymcmapface-agent
 environment = production
+auth_token = your-auth-token-here
 
 [json_tcp_log_backup]
 host = backup-logs.example.com
 port = 5141
 application = meshymcmapface-agent
 environment = production
+auth_token = your-backup-auth-token-here
 ```
 
 **Supported Options:**
@@ -147,6 +149,12 @@ environment = production
 - **Port**: TCP port for log collector (default: 5140)
 - **Application**: Application identifier in logs (default: meshymcmapface)
 - **Environment**: Environment tag (default: production)
+- **Auth Token**: Optional authentication token for secure log collectors (e.g., Cribl Stream)
+
+**Authentication**: When an auth_token is provided, the client sends an authentication message as the first message after connecting:
+```json
+{"auth_token": "your-auth-token-here"}
+```
 
 **Log Format**: Each log entry is sent as a JSON object with newline delimiter containing:
 - `timestamp`: Unix timestamp

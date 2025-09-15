@@ -72,6 +72,7 @@ class JsonTcpLogConfig:
     port: int = 5140
     application: str = 'meshymcmapface'
     environment: str = 'production'
+    auth_token: Optional[str] = None
 
 
 class ConfigManager:
@@ -160,7 +161,8 @@ class ConfigManager:
                         host=section['host'],
                         port=int(section.get('port', 5140)),
                         application=section.get('application', 'meshymcmapface'),
-                        environment=section.get('environment', 'production')
+                        environment=section.get('environment', 'production'),
+                        auth_token=section.get('auth_token')
                     )
                     json_tcp_configs.append(json_tcp_config)
                 except Exception as e:
@@ -313,14 +315,16 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         '# host': 'logs.example.com',
         '# port': '5140',
         '# application': 'meshymcmapface-agent',
-        '# environment': 'production'
+        '# environment': 'production',
+        '# auth_token': 'your-auth-token-here'
     }
     
     config['# json_tcp_log_backup'] = {
         '# host': 'backup-logs.example.com', 
         '# port': '5141',
         '# application': 'meshymcmapface-agent',
-        '# environment': 'production'
+        '# environment': 'production',
+        '# auth_token': 'your-backup-auth-token-here'
     }
     
     with open(filename, 'w') as f:
