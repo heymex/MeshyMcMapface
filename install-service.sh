@@ -48,15 +48,16 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --agent          Install agent only"
+    echo "  --agent          Install agent only (default)"
     echo "  --server         Install server only"
-    echo "  --both           Install both agent and server (default)"
+    echo "  --both           Install both agent and server"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
+    echo "  $0               # Install agent on edge node (default)"
     echo "  $0 --agent       # Install agent on edge node"
     echo "  $0 --server      # Install server on central node"
-    echo "  $0 --both        # Install both (default)"
+    echo "  $0 --both        # Install both"
 }
 
 # Parse command line arguments
@@ -87,10 +88,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Default to both if neither specified
+# Default to agent only if neither specified
 if [ "$INSTALL_AGENT" = false ] && [ "$INSTALL_SERVER" = false ]; then
     INSTALL_AGENT=true
-    INSTALL_SERVER=true
 fi
 
 # Check if running as root
