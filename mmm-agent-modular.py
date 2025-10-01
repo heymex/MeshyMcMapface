@@ -28,9 +28,11 @@ def main():
     parser.add_argument('--log-level', default='INFO',
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                        help='Logging level')
-    parser.add_argument('--log-file', 
+    parser.add_argument('--log-file',
                        help='Log file path (optional)')
-    
+    parser.add_argument('--pid-file',
+                       help='PID file path (optional)')
+
     args = parser.parse_args()
     
     if args.create_config:
@@ -65,19 +67,41 @@ def main():
     
     # Setup logging with JSON TCP support
     setup_logging(level=args.log_level, log_file=args.log_file, json_tcp_configs=json_tcp_configs)
-    
+
+    # Write PID file if specified
+    pid_file = None
+    if args.pid_file:
+        try:
+            import os
+            pid = os.getpid()
+            pid_dir = os.path.dirname(args.pid_file)
+            if pid_dir:
+                os.makedirs(pid_dir, exist_ok=True)
+            with open(args.pid_file, 'w') as f:
+                f.write(str(pid))
+            pid_file = args.pid_file
+        except Exception as e:
+            print(f"Warning: Could not write PID file: {e}")
+
     try:
         # Create agent
         agent = AgentFactory.create_agent(args.agent_type, args.config)
-        
+
         # Run agent
         asyncio.run(agent.run_with_cleanup())
-        
+
     except KeyboardInterrupt:
         print("Agent stopped by user")
     except Exception as e:
         print(f"Agent error: {e}")
         sys.exit(1)
+    finally:
+        # Clean up PID file
+        if pid_file and os.path.exists(pid_file):
+            try:
+                os.remove(pid_file)
+            except:
+                pass
 
 
 if __name__ == "__main__":

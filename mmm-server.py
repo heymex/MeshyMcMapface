@@ -5175,9 +5175,11 @@ async def main():
     parser.add_argument('--log-level', default='INFO',
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                        help='Logging level')
-    parser.add_argument('--log-file', 
+    parser.add_argument('--log-file',
                        help='Log file path (optional)')
-    
+    parser.add_argument('--pid-file',
+                       help='PID file path (optional)')
+
     args = parser.parse_args()
 
     if args.create_config:
@@ -5222,18 +5224,42 @@ async def main():
         if args.log_file:
             file_handler = logging.FileHandler(args.log_file)
             logging.getLogger().addHandler(file_handler)
-    
+
+    # Write PID file if specified
+    pid_file = None
+    if args.pid_file:
+        try:
+            import os
+            pid = os.getpid()
+            pid_dir = os.path.dirname(args.pid_file)
+            if pid_dir:
+                os.makedirs(pid_dir, exist_ok=True)
+            with open(args.pid_file, 'w') as f:
+                f.write(str(pid))
+            pid_file = args.pid_file
+        except Exception as e:
+            print(f"Warning: Could not write PID file: {e}")
+
     server = DistributedMeshyMcMapfaceServer(args.config)
-    
+
     try:
         await server.start_server()
-        
+
         # Keep server running
         while True:
             await asyncio.sleep(3600)  # Sleep for 1 hour
-            
+
     except KeyboardInterrupt:
         print("Server stopped by user")
+    finally:
+        # Clean up PID file
+        if pid_file:
+            try:
+                import os
+                if os.path.exists(pid_file):
+                    os.remove(pid_file)
+            except:
+                pass
 
 if __name__ == "__main__":
     asyncio.run(main())

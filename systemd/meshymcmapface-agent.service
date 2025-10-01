@@ -12,13 +12,16 @@ User=meshyuser
 Group=meshyuser
 SupplementaryGroups=dialout
 WorkingDirectory=/opt/meshymcmapface
-ExecStart=/opt/meshymcmapface/venv/bin/python3 /opt/meshymcmapface/mmm-agent-modular.py --config /etc/meshymcmapface/agent.ini --log-level INFO --log-file /var/log/meshymcmapface/agent.log
+PIDFile=/run/meshymcmapface/agent.pid
+ExecStart=/opt/meshymcmapface/venv/bin/python3 /opt/meshymcmapface/mmm-agent-modular.py --config /etc/meshymcmapface/agent.ini --log-level INFO --log-file /var/log/meshymcmapface/agent.log --pid-file /run/meshymcmapface/agent.pid
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=30
 TimeoutStopSec=30
 KillMode=mixed
 KillSignal=SIGTERM
+RuntimeDirectory=meshymcmapface
+RuntimeDirectoryMode=0755
 
 # Security settings
 NoNewPrivileges=yes
