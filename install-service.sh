@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # MeshyMcMapface SystemD Service Installer
-# Installs both agent and server as systemd services
+# Installs agent and/or server as systemd services
 
 # Exit on error, but allow cleanup
 set -e
@@ -16,6 +16,10 @@ VENV_DIR="$INSTALL_DIR/venv"
 USER="meshyuser"
 GROUP="meshyuser"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Installation flags
+INSTALL_AGENT=false
+INSTALL_SERVER=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,6 +44,55 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --agent          Install agent only"
+    echo "  --server         Install server only"
+    echo "  --both           Install both agent and server (default)"
+    echo "  -h, --help       Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 --agent       # Install agent on edge node"
+    echo "  $0 --server      # Install server on central node"
+    echo "  $0 --both        # Install both (default)"
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --agent)
+            INSTALL_AGENT=true
+            shift
+            ;;
+        --server)
+            INSTALL_SERVER=true
+            shift
+            ;;
+        --both)
+            INSTALL_AGENT=true
+            INSTALL_SERVER=true
+            shift
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Default to both if neither specified
+if [ "$INSTALL_AGENT" = false ] && [ "$INSTALL_SERVER" = false ]; then
+    INSTALL_AGENT=true
+    INSTALL_SERVER=true
+fi
+
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
     print_error "Please run this script as root (sudo)"
@@ -62,7 +115,13 @@ if ! command -v rsync &>/dev/null; then
     exit 1
 fi
 
-print_status "Installing MeshyMcMapface as systemd services..."
+if [ "$INSTALL_AGENT" = true ] && [ "$INSTALL_SERVER" = true ]; then
+    print_status "Installing MeshyMcMapface agent and server..."
+elif [ "$INSTALL_AGENT" = true ]; then
+    print_status "Installing MeshyMcMapface agent only..."
+else
+    print_status "Installing MeshyMcMapface server only..."
+fi
 
 # Create user and group
 if ! id "$USER" &>/dev/null; then
@@ -73,13 +132,15 @@ else
     print_status "User $USER already exists"
 fi
 
-# Add user to dialout group for serial port access
-if getent group dialout &>/dev/null; then
-    print_status "Adding $USER to dialout group for serial port access..."
-    usermod -a -G dialout "$USER"
-    print_success "User added to dialout group"
-else
-    print_warning "dialout group not found - serial port access may not work"
+# Add user to dialout group for serial port access (only needed for agent)
+if [ "$INSTALL_AGENT" = true ]; then
+    if getent group dialout &>/dev/null; then
+        print_status "Adding $USER to dialout group for serial port access..."
+        usermod -a -G dialout "$USER"
+        print_success "User added to dialout group"
+    else
+        print_warning "dialout group not found - serial port access may not work"
+    fi
 fi
 
 # Create directories
@@ -93,8 +154,12 @@ mkdir -p "$DATA_DIR"
 print_status "Copying application files..."
 
 # Stop services if running
-systemctl stop meshymcmapface-agent 2>/dev/null || true
-systemctl stop meshymcmapface-server 2>/dev/null || true
+if [ "$INSTALL_AGENT" = true ]; then
+    systemctl stop meshymcmapface-agent 2>/dev/null || true
+fi
+if [ "$INSTALL_SERVER" = true ]; then
+    systemctl stop meshymcmapface-server 2>/dev/null || true
+fi
 
 # Create list of files to copy (exclude venv, git, cache, etc.)
 rsync -av --delete \
@@ -136,47 +201,73 @@ print_status "Installing Python dependencies in virtual environment..."
 
 # Copy systemd service files
 print_status "Installing systemd service files..."
-cp "$INSTALL_DIR/systemd/meshymcmapface-agent.service" "/etc/systemd/system/"
-cp "$INSTALL_DIR/systemd/meshymcmapface-server.service" "/etc/systemd/system/"
+if [ "$INSTALL_AGENT" = true ]; then
+    cp "$INSTALL_DIR/systemd/meshymcmapface-agent.service" "/etc/systemd/system/"
+fi
+if [ "$INSTALL_SERVER" = true ]; then
+    cp "$INSTALL_DIR/systemd/meshymcmapface-server.service" "/etc/systemd/system/"
+fi
 
 # Reload systemd
 print_status "Reloading systemd daemon..."
 systemctl daemon-reload
 
 # Create sample configuration files if they don't exist
-if [ ! -f "$CONFIG_DIR/agent.ini" ]; then
-    print_status "Creating sample agent configuration..."
-    "$VENV_DIR/bin/python3" "$INSTALL_DIR/mmm-agent-modular.py" --create-config --config "$CONFIG_DIR/agent.ini"
-    chown "$USER:$GROUP" "$CONFIG_DIR/agent.ini"
-    chmod 640 "$CONFIG_DIR/agent.ini"
+if [ "$INSTALL_AGENT" = true ]; then
+    if [ ! -f "$CONFIG_DIR/agent.ini" ]; then
+        print_status "Creating sample agent configuration..."
+        "$VENV_DIR/bin/python3" "$INSTALL_DIR/mmm-agent-modular.py" --create-config --config "$CONFIG_DIR/agent.ini"
+        chown "$USER:$GROUP" "$CONFIG_DIR/agent.ini"
+        chmod 640 "$CONFIG_DIR/agent.ini"
+    fi
 fi
 
-if [ ! -f "$CONFIG_DIR/server.ini" ]; then
-    print_status "Creating sample server configuration..."
-    "$VENV_DIR/bin/python3" "$INSTALL_DIR/mmm-server.py" --create-config --config "$CONFIG_DIR/server.ini"
-    chown "$USER:$GROUP" "$CONFIG_DIR/server.ini"
-    chmod 640 "$CONFIG_DIR/server.ini"
+if [ "$INSTALL_SERVER" = true ]; then
+    if [ ! -f "$CONFIG_DIR/server.ini" ]; then
+        print_status "Creating sample server configuration..."
+        "$VENV_DIR/bin/python3" "$INSTALL_DIR/mmm-server.py" --create-config --config "$CONFIG_DIR/server.ini"
+        chown "$USER:$GROUP" "$CONFIG_DIR/server.ini"
+        chmod 640 "$CONFIG_DIR/server.ini"
+    fi
 fi
 
 print_success "MeshyMcMapface services installed successfully!"
 echo
 print_status "Next steps:"
 echo "1. Edit configuration files:"
-echo "   - Agent: $CONFIG_DIR/agent.ini"
-echo "   - Server: $CONFIG_DIR/server.ini"
+if [ "$INSTALL_AGENT" = true ]; then
+    echo "   - Agent: $CONFIG_DIR/agent.ini"
+fi
+if [ "$INSTALL_SERVER" = true ]; then
+    echo "   - Server: $CONFIG_DIR/server.ini"
+fi
 echo
 echo "2. Enable and start services:"
-echo "   sudo systemctl enable meshymcmapface-agent"
-echo "   sudo systemctl start meshymcmapface-agent"
-echo "   sudo systemctl enable meshymcmapface-server"
-echo "   sudo systemctl start meshymcmapface-server"
+if [ "$INSTALL_AGENT" = true ]; then
+    echo "   sudo systemctl enable meshymcmapface-agent"
+    echo "   sudo systemctl start meshymcmapface-agent"
+fi
+if [ "$INSTALL_SERVER" = true ]; then
+    echo "   sudo systemctl enable meshymcmapface-server"
+    echo "   sudo systemctl start meshymcmapface-server"
+fi
 echo
 echo "3. Check service status:"
-echo "   sudo systemctl status meshymcmapface-agent"
-echo "   sudo systemctl status meshymcmapface-server"
+if [ "$INSTALL_AGENT" = true ]; then
+    echo "   sudo systemctl status meshymcmapface-agent"
+fi
+if [ "$INSTALL_SERVER" = true ]; then
+    echo "   sudo systemctl status meshymcmapface-server"
+fi
 echo
 echo "4. View logs:"
-echo "   sudo journalctl -u meshymcmapface-agent -f"
-echo "   sudo journalctl -u meshymcmapface-server -f"
+if [ "$INSTALL_AGENT" = true ]; then
+    echo "   sudo journalctl -u meshymcmapface-agent -f"
+fi
+if [ "$INSTALL_SERVER" = true ]; then
+    echo "   sudo journalctl -u meshymcmapface-server -f"
+fi
 echo
-print_warning "Remember to configure your Meshtastic device connection in $CONFIG_DIR/agent.ini"
+if [ "$INSTALL_AGENT" = true ]; then
+    print_warning "Remember to configure your Meshtastic device connection in $CONFIG_DIR/agent.ini"
+fi
