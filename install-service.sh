@@ -1,15 +1,21 @@
 #!/bin/bash
-set -e
 
 # MeshyMcMapface SystemD Service Installer
 # Installs both agent and server as systemd services
+
+# Exit on error, but allow cleanup
+set -e
+trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
+trap 'if [ $? -ne 0 ]; then print_error "Command \"$last_command\" failed with exit code $?"; fi' EXIT
 
 INSTALL_DIR="/opt/meshymcmapface"
 CONFIG_DIR="/etc/meshymcmapface"
 LOG_DIR="/var/log/meshymcmapface"
 DATA_DIR="/var/lib/meshymcmapface"
+VENV_DIR="$INSTALL_DIR/venv"
 USER="meshyuser"
 GROUP="meshyuser"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,15 +46,40 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Check dependencies
+if ! command -v python3 &>/dev/null; then
+    print_error "python3 is not installed. Install with: apt install python3 python3-venv python3-pip"
+    exit 1
+fi
+
+if ! command -v pip3 &>/dev/null; then
+    print_error "pip3 is not installed. Install with: apt install python3-pip"
+    exit 1
+fi
+
+if ! command -v rsync &>/dev/null; then
+    print_error "rsync is not installed. Install with: apt install rsync"
+    exit 1
+fi
+
 print_status "Installing MeshyMcMapface as systemd services..."
 
 # Create user and group
 if ! id "$USER" &>/dev/null; then
     print_status "Creating user $USER..."
-    useradd --system --home-dir "$INSTALL_DIR" --shell /bin/false --comment "MeshyMcMapface Service User" "$USER"
+    useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin --comment "MeshyMcMapface Service User" "$USER"
     print_success "User $USER created"
 else
     print_status "User $USER already exists"
+fi
+
+# Add user to dialout group for serial port access
+if getent group dialout &>/dev/null; then
+    print_status "Adding $USER to dialout group for serial port access..."
+    usermod -a -G dialout "$USER"
+    print_success "User added to dialout group"
+else
+    print_warning "dialout group not found - serial port access may not work"
 fi
 
 # Create directories
@@ -58,9 +89,28 @@ mkdir -p "$CONFIG_DIR"
 mkdir -p "$LOG_DIR"
 mkdir -p "$DATA_DIR"
 
-# Copy application files
+# Copy application files selectively
 print_status "Copying application files..."
-cp -r . "$INSTALL_DIR/"
+
+# Stop services if running
+systemctl stop meshymcmapface-agent 2>/dev/null || true
+systemctl stop meshymcmapface-server 2>/dev/null || true
+
+# Create list of files to copy (exclude venv, git, cache, etc.)
+rsync -av --delete \
+    --exclude='.git' \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    --exclude='.pytest_cache' \
+    --exclude='venv' \
+    --exclude='.venv' \
+    --exclude='*.egg-info' \
+    --exclude='.DS_Store' \
+    --exclude='*.log' \
+    --exclude='*.db' \
+    --exclude='*.db-journal' \
+    "$SCRIPT_DIR/" "$INSTALL_DIR/"
+
 chown -R "$USER:$GROUP" "$INSTALL_DIR"
 
 # Set up configuration directory
@@ -75,9 +125,14 @@ chmod 755 "$LOG_DIR"
 chown -R "$USER:$GROUP" "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 
-# Install Python dependencies
-print_status "Installing Python dependencies..."
-pip3 install -r "$INSTALL_DIR/requirements.txt"
+# Create virtual environment and install dependencies
+print_status "Creating Python virtual environment..."
+python3 -m venv "$VENV_DIR"
+chown -R "$USER:$GROUP" "$VENV_DIR"
+
+print_status "Installing Python dependencies in virtual environment..."
+"$VENV_DIR/bin/pip" install --upgrade pip
+"$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
 # Copy systemd service files
 print_status "Installing systemd service files..."
@@ -91,16 +146,16 @@ systemctl daemon-reload
 # Create sample configuration files if they don't exist
 if [ ! -f "$CONFIG_DIR/agent.ini" ]; then
     print_status "Creating sample agent configuration..."
-    cd "$INSTALL_DIR"
-    python3 mmm-agent-modular.py --create-config --config "$CONFIG_DIR/agent.ini"
+    "$VENV_DIR/bin/python3" "$INSTALL_DIR/mmm-agent-modular.py" --create-config --config "$CONFIG_DIR/agent.ini"
     chown "$USER:$GROUP" "$CONFIG_DIR/agent.ini"
+    chmod 640 "$CONFIG_DIR/agent.ini"
 fi
 
 if [ ! -f "$CONFIG_DIR/server.ini" ]; then
     print_status "Creating sample server configuration..."
-    cd "$INSTALL_DIR"
-    python3 mmm-server.py --create-config --config "$CONFIG_DIR/server.ini"
+    "$VENV_DIR/bin/python3" "$INSTALL_DIR/mmm-server.py" --create-config --config "$CONFIG_DIR/server.ini"
     chown "$USER:$GROUP" "$CONFIG_DIR/server.ini"
+    chmod 640 "$CONFIG_DIR/server.ini"
 fi
 
 print_success "MeshyMcMapface services installed successfully!"
