@@ -229,7 +229,8 @@ class ConfigManager:
     def get_database_path(self, agent_id: str) -> str:
         """Get database path for agent"""
         import os
-        db_dir = self.agent_config.database_dir
+        # Get database_dir from config, default to current directory
+        db_dir = self.config['agent'].get('database_dir', '.')
         os.makedirs(db_dir, exist_ok=True)
         return os.path.join(db_dir, f"{agent_id}_buffer.db")
     
