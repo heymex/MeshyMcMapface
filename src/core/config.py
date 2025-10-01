@@ -46,11 +46,12 @@ class AgentConfig:
     location_name: str
     location_lat: float
     location_lon: float
+    database_dir: str = '.'
     route_discovery: Optional[Dict] = None
     priority_nodes: List[str] = None
     priority_check_interval: int = 300  # 5 minutes for priority node checks
     priority_cache_duration: int = 12   # 12 hours cache for priority nodes vs 24 for regular
-    
+
     def __post_init__(self):
         if self.priority_nodes is None:
             self.priority_nodes = []
@@ -130,6 +131,7 @@ class ConfigManager:
                 location_name=agent_section['location_name'],
                 location_lat=float(agent_section['location_lat']),
                 location_lon=float(agent_section['location_lon']),
+                database_dir=agent_section.get('database_dir', '.'),
                 route_discovery=route_discovery,
                 priority_nodes=priority_nodes,
                 priority_check_interval=int(agent_section.get('priority_check_interval', 300)),
@@ -226,7 +228,10 @@ class ConfigManager:
     
     def get_database_path(self, agent_id: str) -> str:
         """Get database path for agent"""
-        return f"{agent_id}_buffer.db"
+        import os
+        db_dir = self.agent_config.database_dir
+        os.makedirs(db_dir, exist_ok=True)
+        return os.path.join(db_dir, f"{agent_id}_buffer.db")
     
     def should_send_to_server(self, server: ServerConfig, packet_data: Dict, node_id: str) -> bool:
         """Determine if packet should be sent to specific server"""
@@ -256,6 +261,7 @@ def create_sample_multi_config(filename: str = 'multi_agent_config.ini'):
         'location_name': 'Test Location',
         'location_lat': '37.7749',
         'location_lon': '-122.4194',
+        'database_dir': '/var/lib/meshymcmapface',
         '# priority_nodes': '!12345678,!87654321,!abcdef01',
         '# priority_check_interval': '300',
         '# priority_cache_duration': '12'
