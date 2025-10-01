@@ -5132,35 +5132,35 @@ class DistributedMeshyMcMapfaceServer:
         self.logger.info(f"Server started at http://{self.bind_host}:{self.bind_port}")
         return site
 
-def create_sample_config():
+def create_sample_config(config_path='server_config.ini'):
     """Create sample server configuration"""
     config = configparser.ConfigParser()
-    
+
     config['server'] = {
         'host': 'localhost',
         'port': '8082'
     }
-    
+
     config['database'] = {
         'path': 'distributed_meshview.db'
     }
-    
+
     config['map'] = {
         'center_lat': '39.8283',
-        'center_lon': '-98.5795', 
+        'center_lon': '-98.5795',
         'zoom_level': '4',
         'force_center': 'false'
     }
-    
+
     config['api_keys'] = {
         'agent_001': secrets.token_hex(16),
         'agent_002': secrets.token_hex(16)
     }
-    
-    with open('server_config.ini', 'w') as f:
+
+    with open(config_path, 'w') as f:
         config.write(f)
-    
-    print("Created sample server config: server_config.ini")
+
+    print(f"Created sample server config: {config_path}")
     print("\nAPI Keys generated:")
     for agent, key in config.items('api_keys'):
         print(f"  {agent}: {key}")
@@ -5179,9 +5179,9 @@ async def main():
                        help='Log file path (optional)')
     
     args = parser.parse_args()
-    
+
     if args.create_config:
-        create_sample_config()
+        create_sample_config(args.config)
         return
     
     if not Path(args.config).exists():
