@@ -37,7 +37,12 @@ src/
 
 ### Python Dependencies
 ```bash
-pip install meshtastic aiohttp aiosqlite configparser pubsub-api
+pip install -r requirements.txt
+```
+
+### System Dependencies (Debian/Ubuntu)
+```bash
+sudo apt install python3 python3-venv python3-pip rsync
 ```
 
 ### Hardware Requirements
@@ -47,53 +52,83 @@ pip install meshtastic aiohttp aiosqlite configparser pubsub-api
 
 ## Quick Start
 
-### Two Agent Options Available
+### SystemD Service Installation (Recommended for Production)
 
-**🚀 Recommended: New Modular Agent**
-- Better architecture and extensibility
-- Multi-server support built-in
-- Enhanced error handling and logging
+**Install Agent on Edge Node**
+```bash
+# Clone repository
+git clone https://github.com/yourusername/MeshyMcMapface.git
+cd MeshyMcMapface
 
-**📦 Legacy Agent**
-- Original implementation
-- Single/multi-server support
-- Maintained for compatibility
+# Install as systemd service (agent only - default)
+sudo ./install-service.sh
 
-### 1. Setup Central Server
+# Edit configuration
+sudo nano /etc/meshymcmapface/agent.ini
+
+# Enable and start service
+sudo systemctl enable meshymcmapface-agent
+sudo systemctl start meshymcmapface-agent
+
+# View logs
+sudo journalctl -u meshymcmapface-agent -f
+```
+
+**Install Server on Central Node**
+```bash
+# Install server only
+sudo ./install-service.sh --server
+
+# Edit configuration
+sudo nano /etc/meshymcmapface/server.ini
+
+# Enable and start service
+sudo systemctl enable meshymcmapface-server
+sudo systemctl start meshymcmapface-server
+
+# View logs
+sudo journalctl -u meshymcmapface-server -f
+```
+
+**Installation Options**
+- `./install-service.sh` or `./install-service.sh --agent` - Install agent only (default)
+- `./install-service.sh --server` - Install server only
+- `./install-service.sh --both` - Install both agent and server
+
+**Uninstall**
+```bash
+# Remove services (keep data and config)
+sudo ./uninstall-service.sh
+
+# Complete removal including data and config
+sudo ./uninstall-service.sh --purge
+```
+
+### Manual Setup (Development)
+
+**1. Setup Central Server**
 
 ```bash
 # Create server configuration
-python mmm-server.py --create-config
+python3 mmm-server.py --create-config
 
 # Start server
-python mmm-server.py --config server_config.ini
+python3 mmm-server.py --config server_config.ini
 ```
 
 The server will start at `http://localhost:8082` with a web dashboard and auto-generated API keys for agents.
 
-### 2. Setup MeshyMcMapface Agent
-
-#### Option A: New Modular Agent (Recommended)
-
-```bash
-# Create multi-server configuration
-python mmm-agent-modular.py --create-config
-
-# Edit multi_agent_config.ini with your settings
-nano multi_agent_config.ini
-
-# Start modular agent with advanced logging
-python mmm-agent-modular.py --config multi_agent_config.ini --log-level INFO --log-file agent.log
-```
-
-#### Option B: Legacy Agent
+**2. Setup MeshyMcMapface Agent**
 
 ```bash
 # Create agent configuration
-python mmm-agent.py --create-config
+python3 mmm-agent-modular.py --create-config
 
-# Start legacy agent
-python mmm-agent.py --config multi_agent_config.ini
+# Edit agent.ini with your settings
+nano multi_agent_config.ini
+
+# Start agent with logging
+python3 mmm-agent-modular.py --config multi_agent_config.ini --log-level INFO --log-file agent.log
 ```
 
 ## Configuration
@@ -112,13 +147,17 @@ agent_001 = <generated-api-key>
 agent_002 = <generated-api-key>
 ```
 
-### Multi-Server Agent Configuration (`multi_agent_config.ini`)
+### Agent Configuration (`agent.ini` or `multi_agent_config.ini`)
 ```ini
 [agent]
-id = agent_sf_bay_001
-location_name = San Francisco Bay Area
+id = agent_001
+location_name = Test Location
 location_lat = 37.7749
 location_lon = -122.4194
+database_dir = /var/lib/meshymcmapface  # Required for systemd service
+# priority_nodes = !12345678,!87654321  # Optional: priority node monitoring
+# priority_check_interval = 300         # Check every 5 minutes
+# priority_cache_duration = 12          # Cache for 12 hours vs 24 for regular
 
 [meshtastic]
 connection_type = auto
@@ -196,22 +235,46 @@ connection_type = auto
 ## Deployment Scenarios
 
 ### Single Region Monitoring
-1. Deploy server on VPS or local server
-2. Install agents on 2-5 Raspberry Pis in different locations
-3. Each agent connects to local Meshtastic node
-4. Monitor entire regional network from central dashboard
+```bash
+# Central server
+server_host:~$ sudo ./install-service.sh --server
+
+# Edge nodes (3-5 Raspberry Pis)
+edge01:~$ sudo ./install-service.sh --agent
+edge02:~$ sudo ./install-service.sh --agent
+edge03:~$ sudo ./install-service.sh --agent
+```
+
+Each agent connects to local Meshtastic node and reports to central server. Monitor entire regional network from central dashboard at `http://server_host:8082`.
 
 ### Multi-Region Network
-1. Central server aggregates data from multiple regions
-2. Each region has 3-8 agents for coverage
-3. Compare network health across regions
-4. Coordinate with other mesh operators
+```bash
+# Central aggregation server
+central:~$ sudo ./install-service.sh --server
+
+# Region 1 (West Coast)
+west01:~$ sudo ./install-service.sh --agent  # Configure to point to central server
+west02:~$ sudo ./install-service.sh --agent
+
+# Region 2 (East Coast)
+east01:~$ sudo ./install-service.sh --agent  # Configure to point to central server
+east02:~$ sudo ./install-service.sh --agent
+```
+
+Compare network health across regions and coordinate with other mesh operators.
 
 ### Emergency Response
-1. Quickly deploy agents at key communication points
-2. Real-time monitoring of mesh network health
-3. Identify coverage gaps and connectivity issues
-4. Share network status with response teams
+```bash
+# Mobile command center with server
+command:~$ sudo ./install-service.sh --server
+
+# Tactical deployment at key points
+checkpoint1:~$ sudo ./install-service.sh --agent
+checkpoint2:~$ sudo ./install-service.sh --agent
+checkpoint3:~$ sudo ./install-service.sh --agent
+```
+
+Real-time monitoring of mesh network health, identify coverage gaps, and share network status with response teams.
 
 ## Web Dashboard Features
 
@@ -297,28 +360,74 @@ connection_type = auto
 
 ## Troubleshooting
 
+### SystemD Service Issues
+
+**Check Service Status**
+```bash
+# Check agent status
+sudo systemctl status meshymcmapface-agent
+
+# Check server status
+sudo systemctl status meshymcmapface-server
+
+# View recent logs
+sudo journalctl -u meshymcmapface-agent -n 100
+sudo journalctl -u meshymcmapface-server -n 100
+
+# Follow logs in real-time
+sudo journalctl -u meshymcmapface-agent -f
+```
+
+**Common Issues**
+```bash
+# Database permission error: "unable to open database file"
+# Fix: Ensure database_dir is set in agent.ini
+sudo nano /etc/meshymcmapface/agent.ini
+# Add: database_dir = /var/lib/meshymcmapface
+
+# Config file not found
+# Fix: Create config if missing
+cd /opt/meshymcmapface
+sudo /opt/meshymcmapface/venv/bin/python3 mmm-agent-modular.py --create-config --config /etc/meshymcmapface/agent.ini
+
+# Serial port permission denied
+# Fix: Ensure user is in dialout group (install script does this)
+sudo usermod -a -G dialout meshyuser
+sudo systemctl restart meshymcmapface-agent
+
+# Service restart loops
+# Check for configuration errors in logs
+sudo journalctl -u meshymcmapface-agent -n 50 --no-pager
+```
+
 ### Agent Connection Issues
 ```bash
 # Check Meshtastic device detection
 meshtastic --info
 
 # Test manual connection
-python -c "import meshtastic; print(meshtastic.serial_interface.SerialInterface())"
+python3 -c "import meshtastic; print(meshtastic.serial_interface.SerialInterface())"
 
-# Check logs
+# Check logs (systemd)
+sudo journalctl -u meshymcmapface-agent -f
+
+# Check logs (manual)
 tail -f agent_*.log
 ```
 
 ### Server Issues
 ```bash
-# Create database
-sqlite3 distributed_meshymcmapface.db ".tables"
-
 # Test API
 curl -H "X-API-Key: your-key" http://localhost:8082/api/stats
 
-# Check server logs
-python mmm-server.py --config server_config.ini
+# Check database
+sudo sqlite3 /var/lib/meshymcmapface/distributed_meshview.db ".tables"
+
+# Check server logs (systemd)
+sudo journalctl -u meshymcmapface-server -f
+
+# Check server logs (manual)
+python3 mmm-server.py --config server_config.ini
 ```
 
 ### Date and Telemetry Issues
@@ -355,49 +464,66 @@ curl -X POST -H "Content-Type: application/json" \
 
 ## Security Considerations
 
+### SystemD Service Security
+The systemd service files include multiple security hardening features:
+- `NoNewPrivileges=yes` - Prevents privilege escalation
+- `ProtectSystem=strict` - Read-only system directories
+- `ProtectHome=yes` - Blocks access to home directories
+- `PrivateTmp=yes` - Isolated /tmp directory
+- `DevicePolicy=closed` - Restricted device access
+- Limited memory and CPU quotas
+
 ### API Security
-- Use strong API keys for agent authentication
-- Implement HTTPS in production
+- Use strong API keys for agent authentication (auto-generated during setup)
+- Implement HTTPS in production with reverse proxy
 - Rate limiting for API endpoints
+- Server network restrictions via `IPAddressAllow` in systemd
 
 ### Network Security
 - VPN connections for sensitive deployments
 - Firewall rules for server access
-- Encrypted data transmission
+- Encrypted data transmission (configure HTTPS/TLS)
+- JSON TCP logging with TLS/SSL support
 
 ### Data Privacy
 - Anonymize location data if required
 - Implement data retention policies
 - User consent for data collection
+- Secure database storage in `/var/lib/meshymcmapface` with restricted permissions
 
 ## Next Steps
 
 ### Completed Features ✅
+- ✅ Production-ready systemd service installation
+- ✅ Selective agent/server installation with uninstall support
+- ✅ Secure service configuration with hardened permissions
+- ✅ Virtual environment isolation for dependencies
+- ✅ Automatic database directory management
+- ✅ Serial device access configuration (dialout group)
+- ✅ JSON TCP logging with TLS/SSL support
 - ✅ Interactive map visualization for nodes with real-time topology
-- ✅ Advanced packet filtering and search in web UI  
+- ✅ Advanced packet filtering and search in web UI
 - ✅ Comprehensive node details with telemetry visualization
 - ✅ Performance optimizations (3000x faster node loading)
 - ✅ Dark mode support across all pages
 - ✅ Robust date parsing and timezone handling
 - ✅ Enhanced telemetry charts with current metrics fallback
+- ✅ Multi-server support with priority and failover
 
 ### Immediate Enhancements
 1. Add export functionality for data analysis (CSV/JSON)
 2. Create alerting system for network issues
 3. Implement data retention policies
 4. Add bulk operations for node management
+5. Monitoring integration (Monit, Prometheus, Grafana)
 
 ### Advanced Features
 1. Machine learning for network optimization
 2. Predictive analytics for coverage planning
 3. Integration with emergency services
 4. Mobile app for field monitoring
-
-### Production Deployment
-1. Docker containerization
-2. Kubernetes orchestration
-3. Database clustering
-4. Monitoring and logging infrastructure
+5. Docker containerization
+6. Kubernetes orchestration for scale
 
 ## Modular Architecture Benefits
 
@@ -437,35 +563,43 @@ class MyCustomAgent(BaseAgent):
         pass
 ```
 
-### Migration Path
+### Production Deployment Architecture
 
-**From Legacy → Modular:**
-1. Both agents use same configuration format
-2. Same database schema
-3. Gradual migration possible
-4. No server changes required
+**Files and Directories:**
+- `/opt/meshymcmapface/` - Application code and virtual environment
+- `/etc/meshymcmapface/` - Configuration files (agent.ini, server.ini)
+- `/var/lib/meshymcmapface/` - Database files and persistent data
+- `/var/log/meshymcmapface/` - Log files
+- `/etc/systemd/system/meshymcmapface-*.service` - SystemD service definitions
 
-**Benefits of Modular Version:**
-- ✅ Better error handling and recovery
-- ✅ Pluggable packet processors  
-- ✅ Multi-server health monitoring
-- ✅ Repository pattern for data access
-- ✅ Centralized logging and configuration
-- ✅ Easy to add new features
-- ✅ Better testing and maintainability
+**Service Management:**
+```bash
+# Start/stop services
+sudo systemctl start meshymcmapface-agent
+sudo systemctl stop meshymcmapface-agent
 
-## Future Enhancements Made Easy
+# Enable/disable auto-start on boot
+sudo systemctl enable meshymcmapface-agent
+sudo systemctl disable meshymcmapface-agent
 
-With the modular structure, these features can be added as separate modules:
+# Restart after config changes
+sudo systemctl restart meshymcmapface-agent
 
-1. **Web Dashboard**: `src/web/` module
-2. **Metrics/Monitoring**: `src/metrics/` module  
-3. **Alerting System**: `src/alerts/` module
-4. **API Server**: `src/api/` module
-5. **Plugin System**: Extend handler architecture
-6. **Cloud Integration**: Cloud-specific clients
-7. **Mobile Apps**: Mobile API endpoints
-8. **Machine Learning**: ML-based analysis modules
+# View service status and recent logs
+sudo systemctl status meshymcmapface-agent
+
+# Follow live logs
+sudo journalctl -u meshymcmapface-agent -f
+```
+
+**Benefits of SystemD Deployment:**
+- ✅ Automatic service restart on failure
+- ✅ Proper resource limits and security hardening
+- ✅ Centralized logging with journald
+- ✅ Easy monitoring with standard tools
+- ✅ Consistent deployment across nodes
+- ✅ Virtual environment isolation
+- ✅ Proper permissions and user separation
 
 ## Support and Contributing
 
