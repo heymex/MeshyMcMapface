@@ -331,12 +331,12 @@ class DistributedMeshyMcMapfaceServer:
             # Insert packets and handle user_info
             for packet in packets:
                 await self.db.execute('''
-                    INSERT INTO packets 
-                    (agent_id, timestamp, from_node, to_node, packet_id, channel, 
+                    INSERT INTO packets
+                    (agent_id, timestamp, from_node, to_node, packet_id, channel,
                      type, payload, rssi, snr, hop_limit, want_ack)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    agent_id, packet['timestamp'], packet.get('from_node'),
+                    agent_id, packet.get('timestamp', timestamp), packet.get('from_node'),
                     packet.get('to_node'), packet.get('packet_id'), packet.get('channel'),
                     packet.get('type'), json.dumps(packet.get('payload')),
                     packet.get('rssi'), packet.get('snr'), packet.get('hop_limit'),
@@ -378,7 +378,7 @@ class DistributedMeshyMcMapfaceServer:
                             link_quality = COALESCE(excluded.link_quality, link_quality),
                             last_seen = excluded.last_seen,
                             packet_count = packet_count + 1
-                    ''', (from_node, to_node, agent_id, snr, rssi, link_quality, packet['timestamp'], packet['timestamp']))
+                    ''', (from_node, to_node, agent_id, snr, rssi, link_quality, packet.get('timestamp', timestamp), packet.get('timestamp', timestamp)))
                 
                 # Handle user_info packets to store names
                 if packet.get('type') == 'user_info' and packet.get('payload'):
@@ -394,7 +394,7 @@ class DistributedMeshyMcMapfaceServer:
                             payload.get('short_name', ''),
                             payload.get('long_name', ''),
                             payload.get('macaddr', ''),
-                            packet['timestamp'],
+                            packet.get('timestamp', timestamp),
                             agent_id
                         ))
             
