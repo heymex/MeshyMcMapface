@@ -42,31 +42,44 @@ class PacketHandler(ABC):
 
 class TextMessageHandler(PacketHandler):
     """Handler for text messages"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
         decoded = packet.get('decoded', {})
-        return 'text' in decoded if decoded else False
-    
+        if not decoded:
+            return False
+
+        # Check for text message or TEXT_MESSAGE_APP portnum
+        portnum = decoded.get('portnum')
+        return 'text' in decoded or portnum == 'TEXT_MESSAGE_APP' or portnum == 1
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'text_message'
-        packet_data['payload'] = packet['decoded']['text']
-        
+
+        # Extract text from decoded section
+        decoded = packet.get('decoded', {})
+        packet_data['payload'] = decoded.get('text', '')
+
         self.logger.debug(f"Processed text message from {packet_data['from_node']}")
         return packet_data
 
 
 class PositionHandler(PacketHandler):
     """Handler for position packets"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
         decoded = packet.get('decoded', {})
-        return 'position' in decoded if decoded else False
-    
+        if not decoded:
+            return False
+
+        # Check for position data or POSITION_APP portnum
+        portnum = decoded.get('portnum')
+        return 'position' in decoded or portnum == 'POSITION_APP' or portnum == 3
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'position'
-        
+
         pos = packet['decoded']['position']
         position_data = {
             'latitude': getattr(pos, 'latitude', 0) if hasattr(pos, 'latitude') else pos.get('latitude', 0),
@@ -75,7 +88,7 @@ class PositionHandler(PacketHandler):
             'time': getattr(pos, 'time', 0) if hasattr(pos, 'time') else pos.get('time', 0)
         }
         packet_data['payload'] = position_data
-        
+
         self.logger.debug(f"Processed position data from {packet_data['from_node']}: "
                          f"lat={position_data['latitude']}, lon={position_data['longitude']}")
         return packet_data
@@ -83,21 +96,26 @@ class PositionHandler(PacketHandler):
 
 class TelemetryHandler(PacketHandler):
     """Handler for telemetry packets"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
         decoded = packet.get('decoded', {})
-        return 'telemetry' in decoded if decoded else False
-    
+        if not decoded:
+            return False
+
+        # Check for telemetry data or TELEMETRY_APP portnum
+        portnum = decoded.get('portnum')
+        return 'telemetry' in decoded or portnum == 'TELEMETRY_APP' or portnum == 67
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'telemetry'
-        
+
         telemetry = packet['decoded']['telemetry']
-        
+
         # Process different telemetry types
         telemetry_data = {}
-        
-        # Device metrics (battery, voltage, etc.)
+
+        # Device metrics (battery, voltage, channel utilization, airtime, uptime)
         if hasattr(telemetry, 'device_metrics') or 'device_metrics' in telemetry:
             device_metrics = getattr(telemetry, 'device_metrics', telemetry.get('device_metrics', {}))
             if device_metrics:
@@ -105,36 +123,103 @@ class TelemetryHandler(PacketHandler):
                     'battery_level': getattr(device_metrics, 'battery_level', device_metrics.get('battery_level')),
                     'voltage': getattr(device_metrics, 'voltage', device_metrics.get('voltage')),
                     'channel_utilization': getattr(device_metrics, 'channel_utilization', device_metrics.get('channel_utilization')),
-                    'air_util_tx': getattr(device_metrics, 'air_util_tx', device_metrics.get('air_util_tx'))
+                    'air_util_tx': getattr(device_metrics, 'air_util_tx', device_metrics.get('air_util_tx')),
+                    'uptime_seconds': getattr(device_metrics, 'uptime_seconds', device_metrics.get('uptime_seconds'))
                 }
-        
-        # Environment metrics (temperature, humidity, etc.)
+
+        # Environment metrics (temperature, humidity, pressure, sensors, etc.)
         if hasattr(telemetry, 'environment_metrics') or 'environment_metrics' in telemetry:
             env_metrics = getattr(telemetry, 'environment_metrics', telemetry.get('environment_metrics', {}))
             if env_metrics:
                 telemetry_data['environment_metrics'] = {
                     'temperature': getattr(env_metrics, 'temperature', env_metrics.get('temperature')),
                     'relative_humidity': getattr(env_metrics, 'relative_humidity', env_metrics.get('relative_humidity')),
-                    'barometric_pressure': getattr(env_metrics, 'barometric_pressure', env_metrics.get('barometric_pressure'))
+                    'barometric_pressure': getattr(env_metrics, 'barometric_pressure', env_metrics.get('barometric_pressure')),
+                    'gas_resistance': getattr(env_metrics, 'gas_resistance', env_metrics.get('gas_resistance')),
+                    'voltage': getattr(env_metrics, 'voltage', env_metrics.get('voltage')),
+                    'current': getattr(env_metrics, 'current', env_metrics.get('current')),
+                    'iaq': getattr(env_metrics, 'iaq', env_metrics.get('iaq')),
+                    'distance': getattr(env_metrics, 'distance', env_metrics.get('distance')),
+                    'lux': getattr(env_metrics, 'lux', env_metrics.get('lux')),
+                    'white_lux': getattr(env_metrics, 'white_lux', env_metrics.get('white_lux')),
+                    'ir_lux': getattr(env_metrics, 'ir_lux', env_metrics.get('ir_lux')),
+                    'uv_lux': getattr(env_metrics, 'uv_lux', env_metrics.get('uv_lux')),
+                    'wind_direction': getattr(env_metrics, 'wind_direction', env_metrics.get('wind_direction')),
+                    'wind_speed': getattr(env_metrics, 'wind_speed', env_metrics.get('wind_speed')),
+                    'weight': getattr(env_metrics, 'weight', env_metrics.get('weight')),
+                    'wind_gust': getattr(env_metrics, 'wind_gust', env_metrics.get('wind_gust')),
+                    'wind_lull': getattr(env_metrics, 'wind_lull', env_metrics.get('wind_lull')),
+                    'radiation': getattr(env_metrics, 'radiation', env_metrics.get('radiation')),
+                    'rainfall_1h': getattr(env_metrics, 'rainfall_1h', env_metrics.get('rainfall_1h')),
+                    'rainfall_24h': getattr(env_metrics, 'rainfall_24h', env_metrics.get('rainfall_24h'))
                 }
-        
+
+        # Power metrics (multi-channel voltage/current monitoring)
+        if hasattr(telemetry, 'power_metrics') or 'power_metrics' in telemetry:
+            power_metrics = getattr(telemetry, 'power_metrics', telemetry.get('power_metrics', {}))
+            if power_metrics:
+                telemetry_data['power_metrics'] = {
+                    'ch1_voltage': getattr(power_metrics, 'ch1_voltage', power_metrics.get('ch1_voltage')),
+                    'ch1_current': getattr(power_metrics, 'ch1_current', power_metrics.get('ch1_current')),
+                    'ch2_voltage': getattr(power_metrics, 'ch2_voltage', power_metrics.get('ch2_voltage')),
+                    'ch2_current': getattr(power_metrics, 'ch2_current', power_metrics.get('ch2_current')),
+                    'ch3_voltage': getattr(power_metrics, 'ch3_voltage', power_metrics.get('ch3_voltage')),
+                    'ch3_current': getattr(power_metrics, 'ch3_current', power_metrics.get('ch3_current'))
+                }
+
+        # Air quality metrics (particulate matter and particle counts)
+        if hasattr(telemetry, 'air_quality_metrics') or 'air_quality_metrics' in telemetry:
+            aq_metrics = getattr(telemetry, 'air_quality_metrics', telemetry.get('air_quality_metrics', {}))
+            if aq_metrics:
+                telemetry_data['air_quality_metrics'] = {
+                    'pm10_standard': getattr(aq_metrics, 'pm10_standard', aq_metrics.get('pm10_standard')),
+                    'pm25_standard': getattr(aq_metrics, 'pm25_standard', aq_metrics.get('pm25_standard')),
+                    'pm100_standard': getattr(aq_metrics, 'pm100_standard', aq_metrics.get('pm100_standard')),
+                    'pm10_environmental': getattr(aq_metrics, 'pm10_environmental', aq_metrics.get('pm10_environmental')),
+                    'pm25_environmental': getattr(aq_metrics, 'pm25_environmental', aq_metrics.get('pm25_environmental')),
+                    'pm100_environmental': getattr(aq_metrics, 'pm100_environmental', aq_metrics.get('pm100_environmental')),
+                    'particles_03um': getattr(aq_metrics, 'particles_03um', aq_metrics.get('particles_03um')),
+                    'particles_05um': getattr(aq_metrics, 'particles_05um', aq_metrics.get('particles_05um')),
+                    'particles_10um': getattr(aq_metrics, 'particles_10um', aq_metrics.get('particles_10um')),
+                    'particles_25um': getattr(aq_metrics, 'particles_25um', aq_metrics.get('particles_25um')),
+                    'particles_50um': getattr(aq_metrics, 'particles_50um', aq_metrics.get('particles_50um')),
+                    'particles_100um': getattr(aq_metrics, 'particles_100um', aq_metrics.get('particles_100um'))
+                }
+
+        # Local stats (network statistics)
+        if hasattr(telemetry, 'local_stats') or 'local_stats' in telemetry:
+            local_stats = getattr(telemetry, 'local_stats', telemetry.get('local_stats', {}))
+            if local_stats:
+                telemetry_data['local_stats'] = dict(local_stats) if isinstance(local_stats, dict) else str(local_stats)
+
+        # Health metrics (heart rate, SpO2, body temperature)
+        if hasattr(telemetry, 'health_metrics') or 'health_metrics' in telemetry:
+            health_metrics = getattr(telemetry, 'health_metrics', telemetry.get('health_metrics', {}))
+            if health_metrics:
+                telemetry_data['health_metrics'] = dict(health_metrics) if isinstance(health_metrics, dict) else str(health_metrics)
+
         packet_data['payload'] = telemetry_data
-        
+
         self.logger.debug(f"Processed telemetry data from {packet_data['from_node']}")
         return packet_data
 
 
 class UserInfoHandler(PacketHandler):
     """Handler for user info packets"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
         decoded = packet.get('decoded', {})
-        return 'user' in decoded if decoded else False
-    
+        if not decoded:
+            return False
+
+        # Check for user info or NODEINFO_APP portnum
+        portnum = decoded.get('portnum')
+        return 'user' in decoded or portnum == 'NODEINFO_APP' or portnum == 4
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'user_info'
-        
+
         user_info = packet['decoded']['user']
         user_data = {
             'id': getattr(user_info, 'id', user_info.get('id')),
@@ -143,39 +228,49 @@ class UserInfoHandler(PacketHandler):
             'macaddr': getattr(user_info, 'macaddr', user_info.get('macaddr'))
         }
         packet_data['payload'] = user_data
-        
+
         self.logger.debug(f"Processed user info from {packet_data['from_node']}")
         return packet_data
 
 
 class RoutingHandler(PacketHandler):
     """Handler for routing packets"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
         decoded = packet.get('decoded', {})
-        return 'routing' in decoded if decoded else False
-    
+        if not decoded:
+            return False
+
+        # Check for routing data or ROUTING_APP portnum
+        portnum = decoded.get('portnum')
+        return 'routing' in decoded or portnum == 'ROUTING_APP' or portnum == 5
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'routing'
-        
+
         routing = packet['decoded']['routing']
         routing_data = {
             'error_reason': getattr(routing, 'error_reason', routing.get('error_reason')),
         }
         packet_data['payload'] = routing_data
-        
+
         self.logger.debug(f"Processed routing packet from {packet_data['from_node']}")
         return packet_data
 
 
 class TracerouteHandler(PacketHandler):
     """Handler for traceroute packets"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
         decoded = packet.get('decoded', {})
-        return 'traceroute' in decoded if decoded else False
-    
+        if not decoded:
+            return False
+
+        # Check for traceroute data or TRACEROUTE_APP portnum
+        portnum = decoded.get('portnum')
+        return 'traceroute' in decoded or portnum == 'TRACEROUTE_APP' or portnum == 70
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'traceroute'
@@ -221,17 +316,39 @@ class TracerouteHandler(PacketHandler):
 
 class EncryptedHandler(PacketHandler):
     """Handler for encrypted packets"""
-    
+
     def can_handle(self, packet: Dict) -> bool:
-        # If no decoded section or decoded is empty/None, it's likely encrypted
+        # Check if packet has encrypted field or is missing decoded data
+        if 'encrypted' in packet:
+            return True
+
         decoded = packet.get('decoded')
-        return not decoded or (isinstance(decoded, dict) and not decoded)
-    
+        # If no decoded section or decoded is empty/None, it's likely encrypted
+        if not decoded or (isinstance(decoded, dict) and not decoded):
+            return True
+
+        # Check if decoded has only portnum but no actual data (encrypted on non-default channel)
+        if isinstance(decoded, dict):
+            # If only has portnum and maybe request_id, but no actual payload data
+            keys = set(decoded.keys()) - {'portnum', 'request_id', 'want_response'}
+            if not keys:
+                return True
+
+        return False
+
     def process(self, packet: Dict) -> Dict:
         packet_data = self._create_base_packet_data(packet)
         packet_data['type'] = 'encrypted'
+
+        # Try to extract portnum if available
+        decoded = packet.get('decoded', {})
+        if decoded and isinstance(decoded, dict):
+            portnum = decoded.get('portnum')
+            if portnum:
+                packet_data['portnum'] = portnum
+
         packet_data['payload'] = None
-        
+
         self.logger.debug(f"Processed encrypted packet from {packet_data['from_node']}")
         return packet_data
 
