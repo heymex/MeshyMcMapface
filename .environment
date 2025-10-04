@@ -1,3 +1,3 @@
-Environment,User,Host
-Development,derek,172.16.7.49
-Production,root,146.190.24.200
+Environment,User,Host,Server,Agent
+Development,derek,172.16.7.49,yes,yes
+Production,root,146.190.24.200,yes,no
