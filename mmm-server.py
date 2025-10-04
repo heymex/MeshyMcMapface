@@ -3136,13 +3136,7 @@ class DistributedMeshyMcMapfaceServer:
         // Ensure initial load happens after DOM is ready
         document.addEventListener('DOMContentLoaded', function() {
             console.log('DOM loaded, initializing nodes page...');
-            
-            // Add visible indicator that JS is running
-            const header = document.querySelector('.header h1');
-            if (header) {
-                header.innerHTML += ' <span style="color: green;">(JS Loaded)</span>';
-            }
-            
+
             // Run test to verify DOM access
             testJS();
             
