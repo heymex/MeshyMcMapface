@@ -320,10 +320,17 @@ class DistributedMeshyMcMapfaceServer:
             timestamp = data['timestamp']
             packets = data.get('packets', [])
             node_status = data.get('node_status', [])
-            
+
+            # Ensure agent exists (auto-register if needed)
+            await self.db.execute('''
+                INSERT INTO agents (agent_id, last_seen, packet_count)
+                VALUES (?, ?, 0)
+                ON CONFLICT(agent_id) DO NOTHING
+            ''', (agent_id, timestamp))
+
             # Update agent last seen
             await self.db.execute('''
-                UPDATE agents 
+                UPDATE agents
                 SET last_seen = ?, packet_count = packet_count + ?
                 WHERE agent_id = ?
             ''', (timestamp, len(packets), agent_id))
@@ -442,7 +449,14 @@ class DistributedMeshyMcMapfaceServer:
             agent_id = data['agent_id']
             timestamp = data['timestamp']
             nodes_data = data.get('nodes', {})
-            
+
+            # Ensure agent exists (auto-register if needed)
+            await self.db.execute('''
+                INSERT INTO agents (agent_id, last_seen, packet_count)
+                VALUES (?, ?, 0)
+                ON CONFLICT(agent_id) DO NOTHING
+            ''', (agent_id, timestamp))
+
             # Update agent last seen
             await self.db.execute('''
                 UPDATE agents SET last_seen = ? WHERE agent_id = ?
@@ -533,7 +547,14 @@ class DistributedMeshyMcMapfaceServer:
             timestamp = data['timestamp']
             routes = data.get('routes', [])
             discovery_type = data.get('discovery_type', 'unknown')
-            
+
+            # Ensure agent exists (auto-register if needed)
+            await self.db.execute('''
+                INSERT INTO agents (agent_id, last_seen, packet_count)
+                VALUES (?, ?, 0)
+                ON CONFLICT(agent_id) DO NOTHING
+            ''', (agent_id, timestamp))
+
             # Update agent last seen
             await self.db.execute('''
                 UPDATE agents SET last_seen = ? WHERE agent_id = ?
