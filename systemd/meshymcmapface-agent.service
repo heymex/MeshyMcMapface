@@ -36,10 +36,7 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 
 # Allow access to serial devices
-DeviceAllow=/dev/ttyUSB* rw
-DeviceAllow=/dev/ttyACM* rw
-DeviceAllow=char-usb_device rw
-DevicePolicy=closed
+DevicePolicy=auto
 
 # Resource limits
 MemoryMax=512M
