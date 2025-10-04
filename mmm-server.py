@@ -3670,10 +3670,181 @@ class DistributedMeshyMcMapfaceServer:
         .filter-controls label { font-weight: bold; color: var(--text-primary); }
         .filter-controls select, .filter-controls button { padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); }
         .packet-type { background: var(--accent-hover); padding: 2px 8px; border-radius: 12px; font-size: 0.8em; white-space: nowrap; color: var(--text-primary); }
-        .packet-payload { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+        .packet-payload { max-width: 500px; color: var(--text-primary); word-wrap: break-word; }
+        .packet-payload-short { max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); cursor: pointer; }
+        .packet-payload-full { max-width: 500px; color: var(--text-primary); word-wrap: break-word; }
+        .payload-expand-btn {
+            color: var(--accent-color);
+            cursor: pointer;
+            font-size: 0.85em;
+            margin-left: 5px;
+            text-decoration: underline;
+        }
+        .payload-expand-btn:hover { color: var(--text-primary); }
         .clickable { cursor: pointer; color: var(--accent-color); }
         .clickable:hover { text-decoration: underline; }
         .table-container { max-height: 600px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 10000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content {
+            background-color: var(--bg-secondary);
+            margin: 2% auto;
+            padding: 0;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 1200px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px var(--shadow-color);
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: var(--bg-tertiary);
+            border-radius: 8px 8px 0 0;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .close {
+            color: var(--text-secondary);
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .close:hover,
+        .close:focus {
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        .node-details-loading {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            border: 4px solid var(--border-color);
+            border-top: 4px solid var(--accent-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .node-details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .node-info-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .node-info-table td {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .node-info-table td:first-child {
+            width: 140px;
+        }
+
+        .node-details-section {
+            margin-bottom: 30px;
+        }
+
+        .node-details-section h3 {
+            color: var(--text-primary);
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid var(--accent-color);
+        }
+
+        .packet-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .stat-item {
+            background: var(--bg-tertiary);
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            border: 1px solid var(--border-color);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--text-primary);
+        }
+
+        #telemetryChart {
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            max-width: 100%;
+            background: var(--bg-secondary);
+        }
+
+        .chart-info {
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-top: 10px;
+            text-align: center;
+        }
+
+        /* Role badge styles */
+        .role-router { background: #ff9800; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+        .role-client { background: #2196F3; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+        .role-router-client { background: #9c27b0; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+        .role-client-mute { background: #607d8b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+        .role-repeater { background: #f44336; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+        .role-tracker { background: #4caf50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
+        .role-unknown { background: #9e9e9e; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.85em; }
         
         /* Dark mode toggle */
         .theme-toggle {
@@ -3797,19 +3968,20 @@ class DistributedMeshyMcMapfaceServer:
                     return;
                 }
                 
-                data.packets.forEach(packet => {
+                data.packets.forEach((packet, index) => {
                     const row = tbody.insertRow();
                     const timestamp = new Date(packet.timestamp).toLocaleString();
-                    
+                    const payloadData = formatPayload(packet.payload, packet.type);
+
                     row.innerHTML = `
                         <td>${timestamp}</td>
-                        <td><strong>${packet.from_node_display}</strong>${packet.from_hw_model ? `<br><small style="color: #666;">${packet.from_hw_model}</small>` : ''}${packet.from_role ? `<br><small style="color: #888; font-style: italic;">${packet.from_role}</small>` : ''}${packet.from_hops ? `<br><small style="color: #2196F3;">🛣️ ${packet.from_hops} hops</small>` : ''}</td>
-                        <td>${packet.to_node_display}${packet.to_hw_model ? `<br><small style="color: #666;">${packet.to_hw_model}</small>` : ''}${packet.to_role ? `<br><small style="color: #888; font-style: italic;">${packet.to_role}</small>` : ''}${packet.to_hops ? `<br><small style="color: #2196F3;">🛣️ ${packet.to_hops} hops</small>` : ''}</td>
+                        <td><strong class="clickable" onclick="showNodeDetails('${packet.from_node}')">${packet.from_node_display}</strong>${packet.from_hw_model ? `<br><small style="color: #666;">${packet.from_hw_model}</small>` : ''}${packet.from_role ? `<br><small style="color: #888; font-style: italic;">${packet.from_role}</small>` : ''}${packet.from_hops ? `<br><small style="color: #2196F3;">🛣️ ${packet.from_hops} hops</small>` : ''}</td>
+                        <td><span class="clickable" onclick="showNodeDetails('${packet.to_node}')">${packet.to_node_display}</span>${packet.to_hw_model ? `<br><small style="color: #666;">${packet.to_hw_model}</small>` : ''}${packet.to_role ? `<br><small style="color: #888; font-style: italic;">${packet.to_role}</small>` : ''}${packet.to_hops ? `<br><small style="color: #2196F3;">🛣️ ${packet.to_hops} hops</small>` : ''}</td>
                         <td><span class="packet-type">${packet.type}</span></td>
                         <td>${packet.agent_location}</td>
                         <td>${packet.rssi || '-'}</td>
                         <td>${packet.snr || '-'}</td>
-                        <td class="packet-payload">${formatPayload(packet.payload)}</td>
+                        <td class="packet-payload" id="payload-${index}">${payloadData.html}</td>
                     `;
                 });
                 
@@ -3839,45 +4011,297 @@ class DistributedMeshyMcMapfaceServer:
             }
         }
         
-        function formatPayload(payload) {
-            if (!payload) return '-';
-            if (typeof payload === 'object') {
-                const keys = Object.keys(payload);
-                if (keys.length === 0) return 'Empty';
-                return keys.map(key => `${key}: ${JSON.stringify(payload[key])}`).join(', ');
+        function formatPayload(payload, type) {
+            if (!payload) return { html: '-', needsExpand: false };
+
+            let formatted = '';
+            let fullText = '';
+
+            if (type === 'position' && typeof payload === 'object') {
+                formatted = `Lat: ${payload.latitude?.toFixed(4) || 'N/A'}, Lon: ${payload.longitude?.toFixed(4) || 'N/A'}`;
+                if (payload.altitude) formatted += `, Alt: ${payload.altitude}m`;
+                if (payload.time) formatted += `, Time: ${new Date(payload.time * 1000).toLocaleString()}`;
+                return { html: formatted, needsExpand: false };
+            } else if (type === 'telemetry' && typeof payload === 'object') {
+                if (payload.device_metrics) {
+                    const dm = payload.device_metrics;
+                    formatted = `Battery: ${dm.battery_level || 'N/A'}%`;
+                    if (dm.voltage) formatted += `, Voltage: ${dm.voltage}V`;
+                    if (dm.channel_utilization) formatted += `, Ch.Util: ${dm.channel_utilization}%`;
+                    if (dm.air_util_tx) formatted += `, Air: ${dm.air_util_tx}%`;
+                    return { html: formatted, needsExpand: false };
+                }
+                fullText = JSON.stringify(payload, null, 2);
+            } else if (type === 'text_message') {
+                fullText = String(payload);
+            } else if (type === 'user_info' && typeof payload === 'object') {
+                formatted = `${payload.short_name || 'N/A'} (${payload.long_name || 'N/A'})`;
+                if (payload.macaddr) formatted += `, MAC: ${payload.macaddr}`;
+                return { html: formatted, needsExpand: false };
+            } else if (typeof payload === 'object') {
+                fullText = JSON.stringify(payload, null, 2);
+            } else {
+                fullText = String(payload);
             }
-            return String(payload);
+
+            // Check if content needs expand/collapse (longer than 100 chars)
+            if (fullText.length > 100) {
+                const shortText = fullText.substring(0, 100) + '...';
+                const id = 'payload-' + Math.random().toString(36).substr(2, 9);
+                return {
+                    html: `<span id="${id}-short">${escapeHtml(shortText)}</span>
+                           <span id="${id}-full" style="display:none;">${escapeHtml(fullText)}</span>
+                           <a class="payload-expand-btn" id="${id}-btn" onclick="togglePayload('${id}')">[expand]</a>`,
+                    needsExpand: true
+                };
+            }
+
+            return { html: escapeHtml(fullText), needsExpand: false };
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function togglePayload(id) {
+            const shortEl = document.getElementById(id + '-short');
+            const fullEl = document.getElementById(id + '-full');
+            const btnEl = document.getElementById(id + '-btn');
+
+            if (shortEl.style.display === 'none') {
+                shortEl.style.display = 'inline';
+                fullEl.style.display = 'none';
+                btnEl.textContent = '[expand]';
+            } else {
+                shortEl.style.display = 'none';
+                fullEl.style.display = 'inline';
+                btnEl.textContent = '[collapse]';
+            }
         }
         
+        // Node Details Modal
+        let nodeDetailsModal = null;
+
+        function createNodeDetailsModal() {
+            const modal = document.createElement('div');
+            modal.id = 'nodeDetailsModal';
+            modal.className = 'modal';
+            modal.innerHTML = `
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 id="modalTitle">Node Details</h2>
+                        <span class="close" onclick="closeNodeDetailsModal()">&times;</span>
+                    </div>
+                    <div class="modal-body">
+                        <div class="node-details-loading">
+                            <div class="spinner"></div>
+                            <p>Loading node details...</p>
+                        </div>
+                        <div class="node-details-content" style="display: none;">
+                            <div class="node-details-grid">
+                                <div class="node-basic-info">
+                                    <h3>Basic Information</h3>
+                                    <table class="node-info-table">
+                                        <tr><td><strong>Node ID:</strong></td><td id="modalNodeId">-</td></tr>
+                                        <tr><td><strong>Short Name:</strong></td><td id="modalShortName">-</td></tr>
+                                        <tr><td><strong>Long Name:</strong></td><td id="modalLongName">-</td></tr>
+                                        <tr><td><strong>Role:</strong></td><td id="modalRole">-</td></tr>
+                                        <tr><td><strong>Hardware:</strong></td><td id="modalHardware">-</td></tr>
+                                        <tr><td><strong>MAC Address:</strong></td><td id="modalMac">-</td></tr>
+                                    </table>
+                                </div>
+                                <div class="node-status-info">
+                                    <h3>Status & Metrics</h3>
+                                    <table class="node-info-table">
+                                        <tr><td><strong>Battery:</strong></td><td id="modalBattery">-</td></tr>
+                                        <tr><td><strong>Voltage:</strong></td><td id="modalVoltage">-</td></tr>
+                                        <tr><td><strong>Uptime:</strong></td><td id="modalUptime">-</td></tr>
+                                        <tr><td><strong>Channel Util:</strong></td><td id="modalChannelUtil">-</td></tr>
+                                        <tr><td><strong>Air Util TX:</strong></td><td id="modalAirUtil">-</td></tr>
+                                        <tr><td><strong>Hops Away:</strong></td><td id="modalHops">-</td></tr>
+                                        <tr><td><strong>Last Seen:</strong></td><td id="modalLastSeen">-</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="node-details-section">
+                                <h3>Packet Statistics</h3>
+                                <div class="packet-stats-grid">
+                                    <div class="stat-item">
+                                        <span class="stat-label">Total Packets</span>
+                                        <span class="stat-value" id="modalTotalPackets">-</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Seeing Agents</span>
+                                        <span class="stat-value" id="modalSeeingAgents">-</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Agent Locations</span>
+                                        <span class="stat-value" id="modalAgentLocations">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeNodeDetailsModal();
+                }
+            });
+
+            return modal;
+        }
+
+        function showNodeDetails(nodeId) {
+            if (!nodeDetailsModal) {
+                nodeDetailsModal = createNodeDetailsModal();
+            }
+
+            nodeDetailsModal.style.display = 'block';
+            nodeDetailsModal.querySelector('.node-details-loading').style.display = 'block';
+            nodeDetailsModal.querySelector('.node-details-content').style.display = 'none';
+            document.getElementById('modalTitle').textContent = `Node Details: ${nodeId}`;
+
+            fetch(`/api/nodes/${encodeURIComponent(nodeId)}/details`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    populateNodeDetails(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching node details:', error);
+                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML =
+                        '<p style="color: var(--error-color);">Error loading node details: ' + error.message + '</p>';
+                });
+        }
+
+        function populateNodeDetails(data) {
+            nodeDetailsModal.querySelector('.node-details-loading').style.display = 'none';
+            nodeDetailsModal.querySelector('.node-details-content').style.display = 'block';
+
+            document.getElementById('modalNodeId').textContent = data.node_id || '-';
+            document.getElementById('modalShortName').textContent = data.short_name || '-';
+            document.getElementById('modalLongName').textContent = data.long_name || '-';
+            document.getElementById('modalHardware').textContent = data.hw_model || '-';
+            document.getElementById('modalMac').textContent = data.macaddr || '-';
+
+            const roleElement = document.getElementById('modalRole');
+            if (data.role) {
+                const roleClass = getRoleClass(data.role);
+                roleElement.innerHTML = `<span class="${roleClass}">${data.role}</span>`;
+            } else {
+                roleElement.textContent = '-';
+            }
+
+            document.getElementById('modalBattery').textContent =
+                data.battery_level ? `${data.battery_level}%` : '-';
+            document.getElementById('modalVoltage').textContent =
+                data.voltage ? `${data.voltage}V` : '-';
+            document.getElementById('modalUptime').textContent =
+                data.uptime_seconds ? formatUptime(data.uptime_seconds) : '-';
+            document.getElementById('modalChannelUtil').textContent =
+                data.channel_utilization ? `${data.channel_utilization}%` : '-';
+            document.getElementById('modalAirUtil').textContent =
+                data.air_util_tx ? `${data.air_util_tx}%` : '-';
+            document.getElementById('modalHops').textContent =
+                data.hops_away !== null ? data.hops_away : '-';
+            document.getElementById('modalLastSeen').textContent =
+                data.updated_at ? parseTimestamp(data.updated_at).toLocaleString() : '-';
+
+            document.getElementById('modalTotalPackets').textContent = data.packet_stats?.total_packets || '0';
+            document.getElementById('modalSeeingAgents').textContent = data.packet_stats?.seeing_agents || '0';
+            document.getElementById('modalAgentLocations').textContent = data.packet_stats?.agent_locations || '-';
+        }
+
+        function closeNodeDetailsModal() {
+            if (nodeDetailsModal) {
+                nodeDetailsModal.style.display = 'none';
+            }
+        }
+
+        function getRoleClass(role) {
+            const roleValue = String(role).toUpperCase();
+
+            if (roleValue === '0' || roleValue === 'CLIENT') return 'role-client';
+            if (roleValue === '1' || roleValue.includes('CLIENT_MUTE')) return 'role-client-mute';
+            if (roleValue === '2' || roleValue === 'ROUTER') return 'role-router';
+            if (roleValue === '3' || roleValue.includes('ROUTER_CLIENT')) return 'role-router-client';
+            if (roleValue.includes('ROUTER_LATE')) return 'role-router-late';
+            if (roleValue.includes('REPEATER')) return 'role-repeater';
+            if (roleValue.includes('TRACKER')) return 'role-tracker';
+
+            return 'role-unknown';
+        }
+
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+
+            if (days > 0) {
+                return `${days}d ${hours}h ${minutes}m`;
+            } else if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else {
+                return `${minutes}m`;
+            }
+        }
+
+        function parseTimestamp(timestamp) {
+            if (!timestamp) return null;
+
+            // If timestamp already has timezone info, use it as-is
+            if (timestamp.includes('+') || timestamp.includes('Z')) {
+                return new Date(timestamp);
+            }
+
+            // Otherwise, assume UTC and add 'Z'
+            return new Date(timestamp + 'Z');
+        }
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && nodeDetailsModal && nodeDetailsModal.style.display === 'block') {
+                closeNodeDetailsModal();
+            }
+        });
+
         // Theme toggle functions
         function toggleTheme() {
             const html = document.documentElement;
             const currentTheme = html.getAttribute('data-theme') || 'light';
             const newTheme = currentTheme === 'light' ? 'dark' : 'light';
-            
+
             html.setAttribute('data-theme', newTheme);
             localStorage.setItem('theme', newTheme);
             updateThemeToggleText(newTheme);
         }
-        
+
         function updateThemeToggleText(theme) {
             const toggle = document.getElementById('theme-toggle');
             if (toggle) {
                 toggle.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
             }
         }
-        
+
         // Initialize theme toggle text on load
         window.addEventListener('DOMContentLoaded', () => {
             const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
             updateThemeToggleText(currentTheme);
         });
-        
+
         document.addEventListener('DOMContentLoaded', function() {
             loadAgents();
             loadPackets();
         });
-        
+
         setInterval(loadPackets, 30000);
     </script>
 </body>
