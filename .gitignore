@@ -214,4 +214,5 @@ mmm-*/
 .claude
 *buffer.db
 .environments
+.environment
 
