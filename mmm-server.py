@@ -2497,7 +2497,15 @@ class DistributedMeshyMcMapfaceServer:
                     <input type="text" id="search-input" class="search-input" placeholder="Search by node ID, short name, or long name..." oninput="handleSearch()">
                     <button class="search-clear" onclick="clearSearch()">Clear</button>
                 </div>
-                
+
+                <div style="margin-top: 15px; margin-bottom: 15px;">
+                    <label for="model-filter" style="color: var(--text-primary); font-weight: bold; margin-right: 10px;">📱 Hardware Model:</label>
+                    <select id="model-filter" onchange="handleModelFilter()" style="padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); min-width: 200px;">
+                        <option value="">All Models</option>
+                    </select>
+                    <span id="model-count" style="margin-left: 10px; color: var(--text-secondary); font-size: 0.9em;"></span>
+                </div>
+
                 <strong>🔍 Quick Filters:</strong>
                 <div class="filter-buttons">
                     <button class="filter-btn" data-filter="all" onclick="toggleFilter('all')">
@@ -2592,13 +2600,56 @@ class DistributedMeshyMcMapfaceServer:
                 allNodes = data.nodes || []; // Store original data
                 console.log('allNodes set to:', allNodes);
                 console.log('allNodes length:', allNodes.length);
-                
+
+                // Populate model filter dropdown
+                populateModelFilter();
+
                 // Apply current filters and search to the new data
                 applyFiltersAndSearch();
-                
+
             } catch (error) {
                 console.error('Error loading nodes:', error);
             }
+        }
+
+        function populateModelFilter() {
+            // Get unique hardware models from all nodes
+            const models = new Set();
+            const modelCounts = {};
+
+            allNodes.forEach(node => {
+                if (node.hw_model && node.hw_model.trim() !== '') {
+                    models.add(node.hw_model);
+                    modelCounts[node.hw_model] = (modelCounts[node.hw_model] || 0) + 1;
+                }
+            });
+
+            // Sort models alphabetically
+            const sortedModels = Array.from(models).sort();
+
+            // Populate the dropdown
+            const modelFilter = document.getElementById('model-filter');
+            const currentValue = modelFilter.value; // Preserve selection
+
+            // Clear existing options except "All Models"
+            modelFilter.innerHTML = '<option value="">All Models</option>';
+
+            // Add options for each model with count
+            sortedModels.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = `${model} (${modelCounts[model]})`;
+                modelFilter.appendChild(option);
+            });
+
+            // Restore previous selection if it still exists
+            if (currentValue && sortedModels.includes(currentValue)) {
+                modelFilter.value = currentValue;
+            }
+        }
+
+        function handleModelFilter() {
+            applyFiltersAndSearch();
         }
         
         function displayNodes() {
@@ -2988,17 +3039,37 @@ class DistributedMeshyMcMapfaceServer:
         function applyFiltersAndSearch() {
             // First apply search filter
             let filteredNodes = allNodes.filter(node => nodeMatchesSearch(node));
-            
+
+            // Apply hardware model filter
+            const selectedModel = document.getElementById('model-filter').value;
+            if (selectedModel) {
+                filteredNodes = filteredNodes.filter(node => node.hw_model === selectedModel);
+            }
+
             // Then apply category filters
             if (!activeFilters.has('all')) {
                 filteredNodes = filteredNodes.filter(node => {
                     return Array.from(activeFilters).some(filter => nodeMatchesFilter(node, filter));
                 });
             }
-            
+
             currentNodes = filteredNodes;
             displayNodes();
             updateFilterCounts();
+            updateModelCount();
+        }
+
+        function updateModelCount() {
+            const selectedModel = document.getElementById('model-filter').value;
+            const modelCountSpan = document.getElementById('model-count');
+
+            if (selectedModel) {
+                const count = currentNodes.length;
+                const total = allNodes.filter(node => node.hw_model === selectedModel).length;
+                modelCountSpan.textContent = `Showing ${count} of ${total} ${selectedModel} nodes`;
+            } else {
+                modelCountSpan.textContent = '';
+            }
         }
         
         function toggleFilter(filterType) {
@@ -3032,6 +3103,7 @@ class DistributedMeshyMcMapfaceServer:
         function clearAllFilters() {
             activeFilters.clear();
             activeFilters.add('all');
+            document.getElementById('model-filter').value = ''; // Reset model filter
             updateFilterUI();
             applyFiltersAndSearch();
         }
