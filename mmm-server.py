@@ -140,7 +140,26 @@ class DistributedMeshyMcMapfaceServer:
                 data_source TEXT DEFAULT 'packet'
             )
         ''')
-        
+
+        # Node name history table to track name changes over time
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS node_name_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL,
+                short_name TEXT,
+                long_name TEXT,
+                changed_at TEXT NOT NULL,
+                changed_by_agent TEXT,
+                FOREIGN KEY (node_id) REFERENCES user_info (node_id)
+            )
+        ''')
+
+        # Create index for faster name history lookups
+        await self.db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_name_history_node
+            ON node_name_history(node_id, changed_at DESC)
+        ''')
+
         # Create indexes for performance
         # Network topology tables for mesh network mapping
         await self.db.execute('''
@@ -244,6 +263,7 @@ class DistributedMeshyMcMapfaceServer:
         self.app.router.add_get('/api/nodes', self.get_nodes)
         self.app.router.add_get('/api/nodes/detailed', self.get_nodes_detailed)
         self.app.router.add_get('/api/nodes/{node_id}/details', self.get_node_details)
+        self.app.router.add_get('/api/nodes/{node_id}/name-history', self.get_node_name_history)
         self.app.router.add_get('/api/topology', self.get_topology)
         self.app.router.add_get('/api/connections', self.get_connections)
         self.app.router.add_get('/api/routes', self.get_routes)
@@ -467,7 +487,27 @@ class DistributedMeshyMcMapfaceServer:
                 user = node_info.get('user', {})
                 position = node_info.get('position', {})
                 device_metrics = node_info.get('deviceMetrics', {})
-                
+
+                new_short_name = user.get('shortName', '')
+                new_long_name = user.get('longName', '')
+
+                # Check if names have changed
+                cursor = await self.db.execute('''
+                    SELECT short_name, long_name FROM user_info WHERE node_id = ?
+                ''', (node_id,))
+                existing = await cursor.fetchone()
+
+                if existing:
+                    old_short_name, old_long_name = existing
+                    # Record name change if different
+                    if (old_short_name != new_short_name or old_long_name != new_long_name):
+                        self.logger.info(f"Name change detected for {node_id}: '{old_short_name}/{old_long_name}' -> '{new_short_name}/{new_long_name}'")
+                        await self.db.execute('''
+                            INSERT INTO node_name_history
+                            (node_id, short_name, long_name, changed_at, changed_by_agent)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (node_id, new_short_name, new_long_name, timestamp, agent_id))
+
                 # Update user_info with rich data
                 await self.db.execute('''
                     INSERT OR REPLACE INTO user_info
@@ -478,8 +518,8 @@ class DistributedMeshyMcMapfaceServer:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     node_id,
-                    user.get('shortName', ''),
-                    user.get('longName', ''),
+                    new_short_name,
+                    new_long_name,
                     user.get('macaddr', ''),
                     user.get('hwModel', ''),
                     user.get('role', ''),
@@ -1318,11 +1358,55 @@ class DistributedMeshyMcMapfaceServer:
                 'force_center': self.map_force_center
             }
             return web.json_response(result)
-            
+
         except Exception as e:
             self.logger.error(f"Error getting map config: {e}")
             return web.json_response({'error': str(e)}, status=500)
-    
+
+    async def get_node_name_history(self, request):
+        """Get the name change history for a specific node"""
+        try:
+            node_id = request.match_info['node_id']
+
+            # Get current name
+            cursor = await self.db.execute('''
+                SELECT short_name, long_name FROM user_info WHERE node_id = ?
+            ''', (node_id,))
+            current_names = await cursor.fetchone()
+
+            if not current_names:
+                return web.json_response({'error': 'Node not found'}, status=404)
+
+            # Get name history
+            cursor = await self.db.execute('''
+                SELECT short_name, long_name, changed_at, changed_by_agent
+                FROM node_name_history
+                WHERE node_id = ?
+                ORDER BY changed_at DESC
+            ''', (node_id,))
+            history = await cursor.fetchall()
+
+            result = {
+                'node_id': node_id,
+                'current_short_name': current_names[0],
+                'current_long_name': current_names[1],
+                'history': [
+                    {
+                        'short_name': row[0],
+                        'long_name': row[1],
+                        'changed_at': row[2],
+                        'changed_by_agent': row[3]
+                    }
+                    for row in history
+                ]
+            }
+
+            return web.json_response(result)
+
+        except Exception as e:
+            self.logger.error(f"Error getting node name history: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
     async def get_topology(self, request):
         """Get network topology data showing hops from each agent to each node"""
         try:
@@ -3292,6 +3376,12 @@ class DistributedMeshyMcMapfaceServer:
                                     <p>Loading neighbor information...</p>
                                 </div>
                             </div>
+                            <div class="node-details-section">
+                                <h3>Previous Names for This Node</h3>
+                                <div id="nameHistoryContainer">
+                                    <p>Loading name history...</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -3327,10 +3417,22 @@ class DistributedMeshyMcMapfaceServer:
                         throw new Error(data.error);
                     }
                     populateNodeDetails(data);
+
+                    // Fetch name history
+                    fetch(`/api/nodes/${encodeURIComponent(nodeId)}/name-history`)
+                        .then(response => response.json())
+                        .then(historyData => {
+                            populateNameHistory(historyData);
+                        })
+                        .catch(error => {
+                            console.error('Error fetching name history:', error);
+                            document.getElementById('nameHistoryContainer').innerHTML =
+                                '<p style="color: var(--error-color);">Error loading name history</p>';
+                        });
                 })
                 .catch(error => {
                     console.error('Error fetching node details:', error);
-                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML = 
+                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML =
                         '<p style="color: var(--error-color);">Error loading node details: ' + error.message + '</p>';
                 });
         }
@@ -3571,7 +3673,47 @@ class DistributedMeshyMcMapfaceServer:
                 ctx.fill();
             });
         }
-        
+
+        function populateNameHistory(historyData) {
+            const container = document.getElementById('nameHistoryContainer');
+
+            if (!historyData || !historyData.history || historyData.history.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary);">No name changes recorded</p>';
+                return;
+            }
+
+            // Create table for name history
+            let html = '<table class="node-info-table" style="width: 100%;">';
+            html += '<thead><tr><th>Short Name</th><th>Long Name</th><th>Changed At</th><th>Agent</th></tr></thead>';
+            html += '<tbody>';
+
+            historyData.history.forEach(entry => {
+                const date = new Date(entry.changed_at);
+                const formattedDate = date.toLocaleString();
+
+                html += '<tr>';
+                html += `<td>${escapeHtml(entry.short_name || '-')}</td>`;
+                html += `<td>${escapeHtml(entry.long_name || '-')}</td>`;
+                html += `<td>${formattedDate}</td>`;
+                html += `<td>${escapeHtml(entry.changed_by_agent || '-')}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
         function closeNodeDetailsModal() {
             if (nodeDetailsModal) {
                 nodeDetailsModal.style.display = 'none';
@@ -4185,6 +4327,18 @@ class DistributedMeshyMcMapfaceServer:
                         throw new Error(data.error);
                     }
                     populateNodeDetails(data);
+
+                    // Fetch name history
+                    fetch(`/api/nodes/${encodeURIComponent(nodeId)}/name-history`)
+                        .then(response => response.json())
+                        .then(historyData => {
+                            populateNameHistory(historyData);
+                        })
+                        .catch(error => {
+                            console.error('Error fetching name history:', error);
+                            document.getElementById('nameHistoryContainer').innerHTML =
+                                '<p style="color: var(--error-color);">Error loading name history</p>';
+                        });
                 })
                 .catch(error => {
                     console.error('Error fetching node details:', error);
@@ -5264,6 +5418,12 @@ class DistributedMeshyMcMapfaceServer:
                                     <p>Loading neighbor information...</p>
                                 </div>
                             </div>
+                            <div class="node-details-section">
+                                <h3>Previous Names for This Node</h3>
+                                <div id="nameHistoryContainer">
+                                    <p>Loading name history...</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -5296,10 +5456,22 @@ class DistributedMeshyMcMapfaceServer:
                         throw new Error(data.error);
                     }
                     populateNodeDetails(data);
+
+                    // Fetch name history
+                    fetch(`/api/nodes/${encodeURIComponent(nodeId)}/name-history`)
+                        .then(response => response.json())
+                        .then(historyData => {
+                            populateNameHistory(historyData);
+                        })
+                        .catch(error => {
+                            console.error('Error fetching name history:', error);
+                            document.getElementById('nameHistoryContainer').innerHTML =
+                                '<p style="color: var(--error-color);">Error loading name history</p>';
+                        });
                 })
                 .catch(error => {
                     console.error('Error fetching node details:', error);
-                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML = 
+                    nodeDetailsModal.querySelector('.node-details-loading').innerHTML =
                         '<p style="color: var(--error-color);">Error loading node details: ' + error.message + '</p>';
                 });
         }
@@ -5523,7 +5695,47 @@ class DistributedMeshyMcMapfaceServer:
                 ctx.fill();
             });
         }
-        
+
+        function populateNameHistory(historyData) {
+            const container = document.getElementById('nameHistoryContainer');
+
+            if (!historyData || !historyData.history || historyData.history.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary);">No name changes recorded</p>';
+                return;
+            }
+
+            // Create table for name history
+            let html = '<table class="node-info-table" style="width: 100%;">';
+            html += '<thead><tr><th>Short Name</th><th>Long Name</th><th>Changed At</th><th>Agent</th></tr></thead>';
+            html += '<tbody>';
+
+            historyData.history.forEach(entry => {
+                const date = new Date(entry.changed_at);
+                const formattedDate = date.toLocaleString();
+
+                html += '<tr>';
+                html += `<td>${escapeHtml(entry.short_name || '-')}</td>`;
+                html += `<td>${escapeHtml(entry.long_name || '-')}</td>`;
+                html += `<td>${formattedDate}</td>`;
+                html += `<td>${escapeHtml(entry.changed_by_agent || '-')}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
         function closeNodeDetailsModal() {
             if (nodeDetailsModal) {
                 nodeDetailsModal.style.display = 'none';
