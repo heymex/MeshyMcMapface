@@ -58,12 +58,12 @@ class MultiServerAgent(BaseAgent):
             packet_id = self.queue_manager.queue_packet(packet_data)
             if packet_id > 0:
                 self.logger.debug(f"Queued packet {packet_id} from {packet_data.get('from_node')}")
-            
+
             # Check if this packet is from a priority node
             from_node = packet_data.get('from_node')
             if from_node and self.priority_monitor:
                 self.priority_monitor.on_priority_node_seen(from_node, packet_data)
-                
+
         except Exception as e:
             self.logger.error(f"Error queuing packet: {e}")
     

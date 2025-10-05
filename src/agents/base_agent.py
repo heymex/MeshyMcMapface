@@ -98,16 +98,16 @@ class BaseAgent(ABC, LoggerMixin):
         """Handle received packets from Meshtastic"""
         try:
             self.logger.debug(f"Received packet from: {packet.get('fromId', 'unknown')}")
-            
+
             # Process packet using packet processor
             packet_data = self.packet_processor.process_packet(packet)
-            
+
             # Update node tracking
             self.node_tracker.update_from_packet(packet_data)
-            
+
             # Let subclasses handle the processed packet
             self._handle_processed_packet(packet_data)
-            
+
         except Exception as e:
             self.logger.error(f"Error processing received packet: {e}")
     

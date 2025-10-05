@@ -418,11 +418,11 @@ class PacketProcessor:
             for handler in self.handlers:
                 if handler.can_handle(packet):
                     return handler.process(packet)
-            
+
             # This should never happen since UnknownHandler accepts all packets
             self.logger.error(f"No handler found for packet: {packet}")
             return self.handlers[-1].process(packet)  # Use UnknownHandler as fallback
-            
+
         except Exception as e:
             self.logger.error(f"Error processing packet: {e}")
             # Return a basic packet structure
