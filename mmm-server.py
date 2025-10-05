@@ -952,7 +952,7 @@ class DistributedMeshyMcMapfaceServer:
         """Get detailed node information with packet history and user info - OPTIMIZED"""
         try:
             hours = int(request.query.get('hours', 72))
-            limit = int(request.query.get('limit', 50))  # Reduced default limit
+            limit = int(request.query.get('limit', 500))  # Default to 500 nodes
             
             # OPTIMIZATION: Single query to get all nodes with basic info
             nodes_query = '''
@@ -2392,7 +2392,17 @@ class DistributedMeshyMcMapfaceServer:
                     <option value="72">72 hours</option>
                     <option value="168">7 days</option>
                 </select>
-                
+
+                <label for="limit-filter">Max nodes:</label>
+                <select id="limit-filter" onchange="loadNodes()">
+                    <option value="50">50 nodes</option>
+                    <option value="100">100 nodes</option>
+                    <option value="200">200 nodes</option>
+                    <option value="500" selected>500 nodes</option>
+                    <option value="1000">1000 nodes</option>
+                    <option value="10000">All nodes</option>
+                </select>
+
                 <button onclick="toggleView()" id="view-toggle">Show Packet Details</button>
                 <button onclick="loadNodes()" style="background: #4CAF50; color: white; border: none;">Refresh</button>
             </div>
@@ -2479,9 +2489,10 @@ class DistributedMeshyMcMapfaceServer:
         async function loadNodes() {
             try {
                 const hours = document.getElementById('hours-filter').value;
-                console.log('Loading nodes for', hours, 'hours...');
-                
-                const response = await fetch(`/api/nodes/detailed?hours=${hours}&limit=50`);
+                const limit = document.getElementById('limit-filter').value;
+                console.log('Loading nodes for', hours, 'hours with limit', limit);
+
+                const response = await fetch(`/api/nodes/detailed?hours=${hours}&limit=${limit}`);
                 console.log('Nodes response status:', response.status);
                 
                 if (!response.ok) {
