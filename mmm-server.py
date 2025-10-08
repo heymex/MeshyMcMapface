@@ -2617,7 +2617,15 @@ class DistributedMeshyMcMapfaceServer:
             const models = new Set();
             const modelCounts = {};
 
+            // Deduplicate nodes by node_id before counting
+            const uniqueNodes = new Map();
             allNodes.forEach(node => {
+                if (node.node_id) {
+                    uniqueNodes.set(node.node_id, node);
+                }
+            });
+
+            uniqueNodes.forEach(node => {
                 if (node.hw_model && node.hw_model.trim() !== '') {
                     models.add(node.hw_model);
                     modelCounts[node.hw_model] = (modelCounts[node.hw_model] || 0) + 1;
