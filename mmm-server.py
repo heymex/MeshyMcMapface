@@ -29,8 +29,9 @@ class DistributedMeshyMcMapfaceServer:
         # Configuration
         self.bind_host = self.config.get('server', 'host', fallback='localhost')
         self.bind_port = self.config.getint('server', 'port', fallback=8082)
+        self.site_name = self.config.get('server', 'site_name', fallback='MeshyMcMapface')
         self.db_path = self.config.get('database', 'path', fallback='distributed_meshview.db')
-        
+
         # Map configuration
         self.map_center_lat = self.config.getfloat('map', 'center_lat', fallback=39.8283)
         self.map_center_lon = self.config.getfloat('map', 'center_lon', fallback=-98.5795)
@@ -1607,7 +1608,7 @@ class DistributedMeshyMcMapfaceServer:
 <!DOCTYPE html>
 <html>
 <head>
-    <title>MeshyMcMapface Dashboard</title>
+    <title>SITE_NAME Dashboard</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -1684,7 +1685,7 @@ class DistributedMeshyMcMapfaceServer:
 <body>
     <div class="container">
         <div class="header">
-            <h1>MeshyMcMapface Dashboard</h1>
+            <h1>SITE_NAME Dashboard</h1>
             <p>Real-time monitoring of distributed Meshtastic mesh networks</p>
         </div>
         
@@ -1883,15 +1884,16 @@ class DistributedMeshyMcMapfaceServer:
 </body>
 </html>
         '''
+        html = html.replace('SITE_NAME', self.site_name)
         return web.Response(text=html, content_type='text/html')
-    
+
     async def agents_page(self, request):
         """Agents management page"""
         html = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Agents - MeshyMcMapface</title>
+    <title>Agents - SITE_NAME</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -2075,15 +2077,16 @@ class DistributedMeshyMcMapfaceServer:
 </body>
 </html>
         '''
+        html = html.replace('SITE_NAME', self.site_name)
         return web.Response(text=html, content_type='text/html')
-    
+
     async def nodes_page(self, request):
         """Nodes page with table view"""
         html = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Nodes - MeshyMcMapface</title>
+    <title>Nodes - SITE_NAME</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -3847,15 +3850,16 @@ class DistributedMeshyMcMapfaceServer:
 </body>
 </html>
         '''
+        html = html.replace('SITE_NAME', self.site_name)
         return web.Response(text=html, content_type='text/html')
-    
+
     async def packets_page(self, request):
         """Packets page with filtering"""
         html = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Packets - MeshyMcMapface</title>
+    <title>Packets - SITE_NAME</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -4552,15 +4556,16 @@ class DistributedMeshyMcMapfaceServer:
 </body>
 </html>
         '''
+        html = html.replace('SITE_NAME', self.site_name)
         return web.Response(text=html, content_type='text/html')
-    
+
     async def map_page(self, request):
         """Interactive map page showing nodes and agents"""
         html = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Network Map - MeshyMcMapface</title>
+    <title>Network Map - SITE_NAME</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -4864,7 +4869,7 @@ class DistributedMeshyMcMapfaceServer:
 <body>
     <div class="container">
         <div class="header">
-            <h1>MeshyMcMapface Network Map</h1>
+            <h1>SITE_NAME Network Map</h1>
             <p>Real-time visualization of mesh network nodes and agents</p>
         </div>
         
@@ -4962,7 +4967,7 @@ class DistributedMeshyMcMapfaceServer:
             </div>
             <div class="legend-item" style="margin-top: 10px;">
                 <div class="legend-icon" style="background: #2196F3; transform: scale(1.3);"></div>
-                <span>MeshyMcMapface Agent</span>
+                <span>SITE_NAME Agent</span>
             </div>
             <div class="legend-item">
                 <div class="legend-icon" style="background: #D32F2F;"></div>
@@ -5859,8 +5864,9 @@ class DistributedMeshyMcMapfaceServer:
 </body>
 </html>
         '''
+        html = html.replace('SITE_NAME', self.site_name)
         return web.Response(text=html, content_type='text/html')
-    
+
     async def start_server(self):
         """Start the web server"""
         await self.setup_database()
@@ -5880,7 +5886,8 @@ def create_sample_config(config_path='server_config.ini'):
 
     config['server'] = {
         'host': 'localhost',
-        'port': '8082'
+        'port': '8082',
+        'site_name': 'MeshyMcMapface'
     }
 
     config['database'] = {
