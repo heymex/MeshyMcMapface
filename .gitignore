@@ -215,4 +215,5 @@ mmm-*/
 *buffer.db
 .environments
 .environment
-
+CLAUDE.md
+.running_info
