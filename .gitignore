@@ -217,3 +217,5 @@ mmm-*/
 .environment
 CLAUDE.md
 .running_info
+layers/
+context.md
