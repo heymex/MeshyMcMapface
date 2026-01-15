@@ -142,6 +142,12 @@ port = 8082
 [database]
 path = distributed_meshview.db
 
+[map]
+center_lat = 39.8283
+center_lon = -98.5795
+zoom_level = 4
+force_center = false
+
 [api_keys]
 agent_001 = <generated-api-key>
 agent_002 = <generated-api-key>
@@ -199,6 +205,23 @@ max_retries = 2
 timeout = 30
 # filter_nodes = node1,node2        # Only these nodes
 # exclude_nodes = private_node      # Exclude these nodes
+
+# Route discovery configuration
+[route_discovery]
+enabled = true
+interval_minutes = 60
+hop_limit = 7
+delay_between_traces = 3.0
+
+# Optional: JSON TCP logging configuration
+# [json_tcp_log_primary]
+# host = logs.example.com
+# port = 5140
+# application = meshymcmapface-agent
+# environment = production
+# auth_token = your-auth-token-here
+# use_tls = true
+# verify_ssl = true
 ```
 
 ## Connection Types
