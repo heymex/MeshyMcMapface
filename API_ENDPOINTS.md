@@ -100,8 +100,6 @@ Get recent packets with filtering options.
 - `limit` - Maximum number of packets (default: 100)
 - `type` - Packet type filter (position, telemetry, text_message, etc.)
 - `agent_id` - Filter by specific agent
-- `from_node` - Filter by source node
-- `to_node` - Filter by destination node
 
 **Example:**
 ```
@@ -144,8 +142,7 @@ Get detailed node information with packet history and user info. **This is the m
 
 **Query Parameters:**
 - `hours` - Hours back to include (default: 72)
-- `limit` - Maximum number of nodes (default: 100)
-- `agent_id` - Filter by specific agent
+- `limit` - Maximum number of nodes (default: 500)
 
 **Response:**
 ```json
@@ -174,6 +171,29 @@ Get detailed node information with packet history and user info. **This is the m
         }
       },
       "recent_packets": [...]
+    }
+  ]
+}
+```
+
+#### Get Node Name History
+```
+GET /api/nodes/{node_id}/name-history
+```
+Get the history of name changes for a specific node.
+
+**Response:**
+```json
+{
+  "node_id": "!12345678",
+  "current_short_name": "NODE1",
+  "current_long_name": "My Node 1",
+  "history": [
+    {
+      "short_name": "OLD_NAME",
+      "long_name": "Old Long Name",
+      "changed_at": "2025-08-20T10:00:00Z",
+      "changed_by_agent": "agent_001"
     }
   ]
 }
@@ -211,6 +231,7 @@ Get direct connections between nodes for network graph visualization.
 **Query Parameters:**
 - `agent_id` - Filter by specific agent
 - `hours` - Hours back to analyze (default: 24)
+- `min_quality` - Minimum link quality (0.0-1.0) to include (default: 0.0)
 
 #### Get Routes ⭐
 ```
